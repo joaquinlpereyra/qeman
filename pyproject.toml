@@ -1,0 +1,14 @@
+[project]
+name = "qeman"
+version = "0.1.0"
+requires-python = ">=3.8"
+description = "A Quick EMulator MANager"
+authors = [{ name = "Joaquin", email = "joaquinlpereyra@gmail.com" }]
+dependencies = ["typer[all]"]
+
+[project.scripts]
+qeman = "qeman.main:app"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
