@@ -202,23 +202,29 @@ def run(image: str, mount: Optional[Path] = None, graphical: bool = False, detac
     if meta.get("used_as_base"):
         typer.echo(f"Image '{image_path.name}' was used as a base. Running it directly may corrupt data.", err=True)
         raise typer.Exit(code=1)
+
     validate_qcow2_format(image_path)
     cmd = [
         get_binary("qemu_system"), "-enable-kvm", "-m", "8G", "-cpu", "host", "-smp", "4",
         "-drive", f"file={image_path},format=qcow2,if=virtio", "-boot", "c",
-        "-spice", "port=5930,disable-ticketing=on",
         "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
         "-device", "virtio-net-pci,netdev=net0",
         "-device", "virtio-serial", "-device", "virtio-balloon",
-        "-chardev", "spicevmc,id=vdagent,name=vdagent",
-        "-device", "virtserialport,chardev=vdagent,name=com.redhat.spice.0"
+        "-boot", "order=c",
     ]
     if mount:
         cmd += [
             "-fsdev", f"local,id=fsdev0,path={mount},security_model=none",
             "-device", "virtio-9p-pci,fsdev=fsdev0,mount_tag=quarantine"
         ]
-    cmd += ["--display", "gtk"] if graphical else ["-nographic"]
+
+    if graphical:
+        cmd += ["--display", "gtk", 
+                "-chardev", "spicevmc,id=vdagent,name=vdagent",
+                "-device", "virtserialport,chardev=vdagent,name=com.redhat.spice.0"]
+    else:
+        cmd += ["--display", "none"]
+
     pid = run_command(cmd, detach=detach)
     if pid:
         register_running_vm(image_name=image, pid=pid)
