@@ -9,6 +9,7 @@ import itertools
 import threading
 import tomllib
 import psutil
+import socket
 
 app = typer.Typer(help="Unified QEMU CLI tool")
 snap_app = typer.Typer(help="Manage internal qcow2 snapshots")
@@ -19,12 +20,15 @@ app.add_typer(list_app, name="list")
 DEFAULT_DATA_DIR = Path(os.getenv("QEMAN_HOME", Path.home() / ".qeman"))
 IMAGES_DIR = DEFAULT_DATA_DIR / "imgs"
 LOCKS_DIR = DEFAULT_DATA_DIR / "locks"
+MONITOR_DIR = DEFAULT_DATA_DIR / "monitors"
+
 CONFIG_PATH = DEFAULT_DATA_DIR / "config.toml"
 RUNNING_FILE = DEFAULT_DATA_DIR / "running.json"
 
 DEFAULT_DATA_DIR.mkdir(parents=True, exist_ok=True)
 IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 LOCKS_DIR.mkdir(parents=True, exist_ok=True)
+MONITOR_DIR.mkdir(parents=True, exist_ok=True)
 
 if not CONFIG_PATH.exists():
     default_config = '''
@@ -35,6 +39,7 @@ qemu_system = "qemu-system-x86_64"
     CONFIG_PATH.write_text(default_config)
 
 METADATA_SUFFIX = ".meta.json"
+MONITOR_SUFFIX = ".monitor"
 
 DEFAULT_BINARIES = {
     "qemu_img": "qemu-img",
@@ -169,12 +174,15 @@ def new(image_name: str, iso: Path):
         subprocess.run([get_binary("qemu_img"), "create", "-f", "qcow2", str(image_path), "40G"], check=True)
     metadata = {"created_from_iso": str(iso), "notes": ""}
     write_metadata(image_path, metadata)
+    monitor_path = MONITOR_DIR / f"{image}_monitor.sock"
+
     cmd = [
         get_binary("qemu_system"),
         "-enable-kvm", "-m", "8G", "-cpu", "host", "-smp", "2",
         "-drive", f"file={image_path},format=qcow2,if=virtio",
         "-cdrom", str(iso), "-boot", "d",
         "-netdev", "user,id=net0", "-device", "virtio-net-pci,netdev=net0",
+        "-qmp-pretty", f"unix:{monitor_path},server,nowait",
         "--display", "gtk"
     ]
     run_command(cmd)
@@ -202,7 +210,7 @@ def run(image: str, mount: Optional[Path] = None, graphical: bool = False, detac
     if meta.get("used_as_base"):
         typer.echo(f"Image '{image_path.name}' was used as a base. Running it directly may corrupt data.", err=True)
         raise typer.Exit(code=1)
-
+    monitor_path = MONITOR_DIR / f"{image}_monitor.sock"
     validate_qcow2_format(image_path)
     cmd = [
         get_binary("qemu_system"), "-enable-kvm", "-m", "8G", "-cpu", "host", "-smp", "4",
@@ -210,6 +218,7 @@ def run(image: str, mount: Optional[Path] = None, graphical: bool = False, detac
         "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
         "-device", "virtio-net-pci,netdev=net0",
         "-device", "virtio-serial", "-device", "virtio-balloon",
+        "-qmp-pretty", f"unix:{monitor_path},server,nowait",
         "-boot", "order=c",
     ]
     if mount:
@@ -251,29 +260,60 @@ def register_running_vm(image_name: str, pid: int):
         typer.echo(f"Failed to write running registry: {e}", err=True)
 
 def get_running_vms() -> dict:
-    if RUNNING_FILE.exists():
-        data = json.load(open(RUNNING_FILE))
-        updated = {k: v for k, v in data.items() if psutil.pid_exists(v)}
-        if updated != data:
-            json.dump(updated, open(RUNNING_FILE, "w"), indent=2)
-        return updated
-    return {}
+    if not RUNNING_FILE.exists():
+        return {}
+    data = json.load(open(RUNNING_FILE))
+    updated = {}
+    for name, pid in data.items():
+        if psutil.pid_exists(pid):
+            updated[name] = pid
+        else:
+            mon = DEFAULT_DATA_DIR / f"monitors/{name}_monitor.sock"
+            try:
+                mon.unlink()
+            except FileNotFoundError:
+                pass
+    if updated != data:
+        json.dump(updated, open(RUNNING_FILE, "w"), indent=2)
+    return updated
 
 @app.command()
 def kill(vm: str):
+
+    def send_qmp_shutdown(monitor_path: Path):
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.connect(str(monitor_path))
+                s.settimeout(2)
+
+                s.sendall(b'{"execute":"qmp_capabilities"}\n')
+                time.sleep(0.1)
+                _ = s.recv(4096)  
+
+                s.sendall(b'{"execute":"system_powerdown"}\n')
+                time.sleep(0.1)
+        except Exception as e:
+            typer.echo(f"QMP command failed: {e}", err=True)
+            raise typer.Exit(code=1)
+
     running = get_running_vms()
     if vm not in running:
         typer.echo(f"No running VM registered under name '{vm}'", err=True)
         raise typer.Exit(code=1)
-    pid = running[vm]
-    try:
-        psutil.Process(pid).kill()
-        typer.echo(f"Killed VM '{vm}' with PID {pid}.")
-        del running[vm]
-        json.dump(running, open(RUNNING_FILE, "w"), indent=2)
-    except Exception as e:
-        typer.echo(f"Failed to kill process {pid}: {e}", err=True)
+
+    monitor_path = DEFAULT_DATA_DIR / f"monitors/{vm}_monitor.sock"
+    if not monitor_path.exists():
+        typer.echo(f"Monitor socket not found for VM '{vm}'", err=True)
         raise typer.Exit(code=1)
+
+    send_qmp_shutdown(monitor_path)
+
+    time.sleep(1)
+    try:
+        monitor_path.unlink()
+    except FileNotFoundError:
+        typer.echo(f"[!] No monitor found for VM '{vm}'. Could not remove what was not there.")
+
 
 @app.command()
 def info(image: str):
