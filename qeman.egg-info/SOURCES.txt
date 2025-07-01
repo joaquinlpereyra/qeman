@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+qeman/__init__.py
+qeman/main.py
+qeman.egg-info/PKG-INFO
+qeman.egg-info/SOURCES.txt
+qeman.egg-info/dependency_links.txt
+qeman.egg-info/entry_points.txt
+qeman.egg-info/requires.txt
+qeman.egg-info/top_level.txt

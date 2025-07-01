@@ -1,4 +1,8 @@
+
 import typer
+from typing import List
+from typing_extensions import Annotated
+from typer import Context, Argument
 import subprocess
 from pathlib import Path
 from typing import Optional, List
@@ -10,6 +14,7 @@ import threading
 import tomllib
 import psutil
 import socket
+
 
 app = typer.Typer(help="Unified QEMU CLI tool")
 snap_app = typer.Typer(help="Manage internal qcow2 snapshots")
@@ -45,6 +50,13 @@ DEFAULT_BINARIES = {
     "qemu_img": "qemu-img",
     "qemu_system": "qemu-system-x86_64"
 }
+def complete_image_names(ctx: typer.Context, args: List[str], incomplete: str):
+    for img in sorted(IMAGES_DIR.glob("*")):
+        if incomplete in img.name and not img.name.endswith(METADATA_SUFFIX):
+            yield img.name
+
+def running_vm_names(ctx: Context, args, incomplete: str):
+    return [k for k in get_running_vms().keys() if incomplete in k]
 
 def load_config():
     if CONFIG_PATH.exists():
@@ -113,7 +125,9 @@ def read_metadata(image_path: Path):
     return {}
 
 @app.command()
-def fork(base_image: str, new_image: str):
+def fork(base_image: Annotated[str, typer.Argument(
+    help="Base image to fork", autocompletion=complete_image_names,
+)], new_image: str):
     base_path = resolve_image(base_image)
     new_path = IMAGES_DIR / new_image
     if new_path.exists():
@@ -204,7 +218,7 @@ def wait_with_spinner(stop_flag: threading.Event, seconds: int):
     thread.join()
 
 @app.command()
-def run(image: str, mount: Optional[Path] = None, graphical: bool = False, detach: bool = True, post: Optional[Path] = None):
+def run(image: Annotated[str, typer.Argument(help="Image to run", autocompletion=complete_image_names)], mount: Optional[Path] = None, graphical: bool = False, detach: bool = True, post: Optional[Path] = None):
     image_path = resolve_image(image)
     meta = read_metadata(image_path)
     if meta.get("used_as_base"):
@@ -278,8 +292,7 @@ def get_running_vms() -> dict:
     return updated
 
 @app.command()
-def kill(vm: str):
-
+def kill(vm: str = Argument(..., autocompletion=running_vm_names)):
     def send_qmp_shutdown(monitor_path: Path):
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
