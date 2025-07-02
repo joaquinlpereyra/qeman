@@ -397,8 +397,8 @@ def list_cmd_vms():
             "name":       name,
             "pid":        pid,
             "ssh_port":   info.get("ssh_port"),
-            "memory_rss": f"{mem_rss / (1024**2):.1f}mb",
-            "cpu_percent": cpu_pct,
+            "memory_rss": f"{(mem_rss or 0) / (1024**2):.1f}mb" if mem_rss is not None else "-",
+            "cpu_percent": cpu_pct if cpu_pct is not None else "-" ,
         })
     typer.echo(json.dumps(out, indent=2))
 
