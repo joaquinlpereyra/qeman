@@ -1,2 +1,0 @@
-[console_scripts]
-qeman = qeman.main:app

@@ -1,5 +1,0 @@
-typer[all]
-psutil>=7.0.0
-
-[:python_version < "3.11"]
-tomli

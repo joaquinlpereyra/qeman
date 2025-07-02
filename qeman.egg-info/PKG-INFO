@@ -1,9 +1,0 @@
-Metadata-Version: 2.4
-Name: qeman
-Version: 0.1.0
-Summary: A Quick EMulator MANager
-Author-email: Joaquin <joaquinlpereyra@gmail.com>
-Requires-Python: >=3.8
-Requires-Dist: typer[all]
-Requires-Dist: tomli; python_version < "3.11"
-Requires-Dist: psutil>=7.0.0
