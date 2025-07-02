@@ -368,18 +368,40 @@ def version():
 
 @list_app.command("images")
 def list_cmd_images():
+    out = []
     for img in sorted(IMAGES_DIR.glob("*")):
         if img.name.endswith(METADATA_SUFFIX):
             continue
         meta = read_metadata(img)
-        note = meta.get("notes", "")
-        typer.echo(f"- {img.name}" + (f" — {note}" if note else ""))
+        # include name + all metadata keys
+        entry = {"name": img.name, **meta}
+        out.append(entry)
+    typer.echo(json.dumps(out, indent=2))
+
 
 @list_app.command("vms")
 def list_cmd_vms():
-    running = get_running_vms()
-    for name, pid in running.items():
-        typer.echo(f"- {name}: PID {pid}")
+    running = get_running_vms() 
+    out = []
+    for name, info in running.items():
+        pid = info["pid"]
+        try:
+            p = psutil.Process(pid)
+            mem_rss = p.memory_info().rss
+            cpu_pct = p.cpu_percent(interval=0.1)
+        except psutil.NoSuchProcess:
+            mem_rss = None
+            cpu_pct = None
+
+        out.append({
+            "name":       name,
+            "pid":        pid,
+            "ssh_port":   info.get("ssh_port"),
+            "memory_rss": f"{mem_rss / (1024**2):.1f}mb",
+            "cpu_percent": cpu_pct,
+        })
+    typer.echo(json.dumps(out, indent=2))
+
 
 
 if __name__ == "__main__":
