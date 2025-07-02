@@ -27,6 +27,8 @@ IMAGES_DIR = DEFAULT_DATA_DIR / "imgs"
 LOCKS_DIR = DEFAULT_DATA_DIR / "locks"
 MONITOR_DIR = DEFAULT_DATA_DIR / "monitors"
 
+DEVNULL = open(os.devnull, "wb")
+
 CONFIG_PATH = DEFAULT_DATA_DIR / "config.toml"
 RUNNING_FILE = DEFAULT_DATA_DIR / "running.json"
 
@@ -45,11 +47,19 @@ qemu_system = "qemu-system-x86_64"
 
 METADATA_SUFFIX = ".meta.json"
 MONITOR_SUFFIX = ".monitor"
+SSH_BASE_PORT = 4242
 
 DEFAULT_BINARIES = {
     "qemu_img": "qemu-img",
     "qemu_system": "qemu-system-x86_64"
 }
+def pick_next_port(running: dict[str, dict]) -> int:
+    used = {info["ssh_port"] for info in running.values()}
+    port = SSH_BASE_PORT
+    while port in used:
+        port += 1
+    return port
+
 def complete_image_names(ctx: typer.Context, args: List[str], incomplete: str):
     for img in sorted(IMAGES_DIR.glob("*")):
         if incomplete in img.name and not img.name.endswith(METADATA_SUFFIX):
@@ -68,20 +78,22 @@ def get_binary(name: str) -> str:
     config = load_config()
     return config.get("binaries", {}).get(name, DEFAULT_BINARIES[name])
 
-def run_command(cmd: list[str], detach: bool = False) -> Optional[int]:
-    typer.echo(f"Running: {' '.join(cmd)}")
-    try:
-        proc = subprocess.Popen(cmd)
-        if not detach:
-            def wait_and_warn(p: subprocess.Popen):
-                p.wait()
-                typer.echo(f"Process {p.pid} exited with code {p.returncode}")
-
-            threading.Thread(target=wait_and_warn, args=(proc,), daemon=True).start()
+def run_command(cmd: List[str], detach: bool = True) -> Optional[int]:
+    if detach:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=DEVNULL,
+            stderr=DEVNULL,
+            start_new_session=True
+        )
         return proc.pid
-    except Exception as e:
-        typer.echo(f"Command failed: {e}", err=True)
-        raise typer.Exit(code=1)
+    else:
+        # blocking: let output through
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            typer.echo(f"Command failed with exit {result.returncode}", err=True)
+            raise typer.Exit(result.returncode)
+        return None
 
 def resolve_image(name_or_path: str) -> Path:
     candidate = Path(name_or_path)
@@ -125,9 +137,9 @@ def read_metadata(image_path: Path):
     return {}
 
 @app.command()
-def fork(base_image: Annotated[str, typer.Argument(
-    help="Base image to fork", autocompletion=complete_image_names,
-)], new_image: str):
+def fork(
+    base_image: Annotated[str, typer.Argument(help="Base image to fork", autocompletion=complete_image_names,)], 
+    new_image: str):
     base_path = resolve_image(base_image)
     new_path = IMAGES_DIR / new_image
     if new_path.exists():
@@ -179,7 +191,9 @@ def snap_delete(image: str, name: str):
         unlock_image(lock_path)
 
 @app.command()
-def new(image_name: str, iso: Path):
+def new(
+    image_name: str, 
+    iso: Path):
     if not iso.exists():
         raise typer.BadParameter(f"Installer ISO not found: {iso}")
     image_path = IMAGES_DIR / image_name
@@ -218,7 +232,28 @@ def wait_with_spinner(stop_flag: threading.Event, seconds: int):
     thread.join()
 
 @app.command()
-def run(image: Annotated[str, typer.Argument(help="Image to run", autocompletion=complete_image_names)], mount: Optional[Path] = None, graphical: bool = False, detach: bool = True, post: Optional[Path] = None):
+def connect(vm: str = Argument(..., autocompletion=running_vm_names)):
+    running = get_running_vms()
+    info = running.get(vm)
+    if not info:
+        typer.echo(f"No VM named '{vm}' running.", err=True)
+        raise typer.Exit(1)
+    port = info["ssh_port"]
+    args = [
+        "ssh",
+        "-oStrictHostKeyChecking=no",
+        "-oUserKnownHostsFile=/dev/null",
+        f"-p{port}",
+        f"j@localhost"
+    ]
+    os.execvp("ssh", args)
+
+@app.command()
+def run(
+    image: Annotated[str, Argument(autocompletion=complete_image_names, help="Image to run")], 
+    mount: Optional[Path] = None, 
+    graphical: bool = False, 
+    post: Optional[Path] = None):
     image_path = resolve_image(image)
     meta = read_metadata(image_path)
     if meta.get("used_as_base"):
@@ -226,10 +261,14 @@ def run(image: Annotated[str, typer.Argument(help="Image to run", autocompletion
         raise typer.Exit(code=1)
     monitor_path = MONITOR_DIR / f"{image}_monitor.sock"
     validate_qcow2_format(image_path)
+
+    running = get_running_vms()            # load existing
+    ssh_port = pick_next_port(running)
+
     cmd = [
         get_binary("qemu_system"), "-enable-kvm", "-m", "8G", "-cpu", "host", "-smp", "4",
         "-drive", f"file={image_path},format=qcow2,if=virtio", "-boot", "c",
-        "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
+        "-netdev", f"user,id=net0,hostfwd=tcp::{ssh_port}-:22",
         "-device", "virtio-net-pci,netdev=net0",
         "-device", "virtio-serial", "-device", "virtio-balloon",
         "-qmp-pretty", f"unix:{monitor_path},server,nowait",
@@ -248,9 +287,9 @@ def run(image: Annotated[str, typer.Argument(help="Image to run", autocompletion
     else:
         cmd += ["--display", "none"]
 
-    pid = run_command(cmd, detach=detach)
-    if pid:
-        register_running_vm(image_name=image, pid=pid)
+    pid = run_command(cmd)
+    register_running_vm(image, pid, ssh_port)
+
     if post:
         typer.echo(f"Waiting for VM to boot to run post script: {post}")
         stop_flag = threading.Event()
@@ -264,11 +303,11 @@ def run(image: Annotated[str, typer.Argument(help="Image to run", autocompletion
         except subprocess.CalledProcessError as e:
             typer.echo(f"Post-run script failed: {e}", err=True)
 
-def register_running_vm(image_name: str, pid: int):
+def register_running_vm(image_name: str, pid: int, ssh_port: int):
     RUNNING_FILE.parent.mkdir(parents=True, exist_ok=True)
     try:
         data = json.load(open(RUNNING_FILE)) if RUNNING_FILE.exists() else {}
-        data[image_name] = pid
+        data[image_name] = {"pid": pid, "ssh_port": ssh_port}
         json.dump(data, open(RUNNING_FILE, "w"), indent=2)
     except Exception as e:
         typer.echo(f"Failed to write running registry: {e}", err=True)
@@ -277,22 +316,10 @@ def get_running_vms() -> dict:
     if not RUNNING_FILE.exists():
         return {}
     data = json.load(open(RUNNING_FILE))
-    updated = {}
-    for name, pid in data.items():
-        if psutil.pid_exists(pid):
-            updated[name] = pid
-        else:
-            mon = DEFAULT_DATA_DIR / f"monitors/{name}_monitor.sock"
-            try:
-                mon.unlink()
-            except FileNotFoundError:
-                pass
-    if updated != data:
-        json.dump(updated, open(RUNNING_FILE, "w"), indent=2)
-    return updated
+    return data
 
 @app.command()
-def kill(vm: str = Argument(..., autocompletion=running_vm_names)):
+def kill(vm: Annotated[str, typer.Argument(autocompletion=running_vm_names)]):
     def send_qmp_shutdown(monitor_path: Path):
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
@@ -337,7 +364,7 @@ def info(image: str):
 
 @app.command()
 def version():
-    typer.echo("qeman v0.1.0")
+    typer.echo("qeman v0.2.0")
 
 @list_app.command("images")
 def list_cmd_images():
