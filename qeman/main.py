@@ -308,11 +308,9 @@ def kill(vm: str):
 
     send_qmp_shutdown(monitor_path)
 
-    time.sleep(1)
-    try:
-        monitor_path.unlink()
-    except FileNotFoundError:
-        typer.echo(f"[!] No monitor found for VM '{vm}'. Could not remove what was not there.")
+    # There was some logic to remove the monitor manually here 
+    # BUt qemu appears to remove it automatically on shutdown.
+
 
 
 @app.command()
