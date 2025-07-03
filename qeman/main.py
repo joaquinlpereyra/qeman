@@ -203,9 +203,7 @@ def run(
 
     monitor_path = dotfiles.get_monitor(image)
     validate_qcow2_format(image_path)
-
-    running = dotfiles.get_running_vms()           
-    ssh_port = dotfiles.get_next_ssh_port(running)
+    ssh_port = dotfiles.get_next_ssh_port()
 
     cmd = [
         dotfiles.get_binary("qemu_system"), "-m", "8G", "-smp", "4",
