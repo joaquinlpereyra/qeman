@@ -136,7 +136,7 @@ def new(
     image_path = dotfiles.get_image(image_name)
     if not image_path.exists():
         typer.echo(f"Creating image: {image_path}")
-        subprocess.run([dotfiles.get_binary("qemu_img"), "create", "-f", "qcow2", str(image_path), "40G"], check=True)
+        subprocess.run([dotfiles.get_binary("qemu_img"), "create", "-f", "qcow2", str(image_path), "100G"], check=True)
     metadata = {"created_from_iso": str(iso), "notes": ""}
     dotfiles.set_metadata(image_path, metadata)
     monitor_path = dotfiles.get_monitor(vm)
