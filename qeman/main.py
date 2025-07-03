@@ -195,7 +195,7 @@ def run(
     mount: Optional[Path] = None,
     graphical: bool = False,
     post: Optional[Path] = None):
-    image_path = resolve_image(image)
+    image_path = dotfiles.get_image(image)
     meta = dotfiles.get_metadata(image_path)
     if meta.get("dependents"):
         typer.echo(f"Image '{image_path.name}' has dependent forks. Running it directly may corrupt data.", err=True)
