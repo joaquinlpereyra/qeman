@@ -69,8 +69,11 @@ def complete_image_names(ctx: typer.Context, args: List[str], incomplete: str):
         if incomplete in img.name and not img.name.endswith(METADATA_SUFFIX):
             yield img.name
 
-def running_vm_names(ctx: Context, args, incomplete: str):
-    return [k for k in get_running_vms().keys() if incomplete in k]
+def running_vm_names(ctx: Context, args: List[str], incomplete: str):
+    already_entered = set(args)
+    for vm in get_running_vms().keys():
+        if vm.startswith(incomplete) and vm not in already_entered:
+            yield vm
 
 def load_config():
     if CONFIG_PATH.exists():
@@ -149,7 +152,10 @@ def fork(
     if new_path.exists():
         raise typer.BadParameter(f"Target image already exists: {new_path}")
     meta = read_metadata(base_path)
-    meta["used_as_base"] = True
+    deps = meta.get("dependents", [])
+    if new_image not in deps:
+        deps.append(new_image)
+    meta["dependents"] = deps
     write_metadata(base_path, meta)
     cmd = [get_binary("qemu_img"), "create", "-f", "qcow2", "-F", "qcow2", "-b", str(base_path), str(new_path)]
     run_command(cmd)
@@ -264,8 +270,8 @@ def run(
     post: Optional[Path] = None):
     image_path = resolve_image(image)
     meta = read_metadata(image_path)
-    if meta.get("used_as_base"):
-        typer.echo(f"Image '{image_path.name}' was used as a base. Running it directly may corrupt data.", err=True)
+    if meta.get("dependents"):
+        typer.echo(f"Image '{image_path.name}' has dependent forks. Running it directly may corrupt data.", err=True)
         raise typer.Exit(code=1)
     monitor_path = MONITOR_DIR / f"{image}_monitor.sock"
     validate_qcow2_format(image_path)
@@ -336,7 +342,7 @@ def get_running_vms() -> dict:
     return data
 
 @app.command()
-def kill(vm: Annotated[str, typer.Argument(autocompletion=running_vm_names)]):
+def kill(vms: Annotated[List[str], typer.Argument(autocompletion=running_vm_names)]):
     def send_qmp_shutdown(monitor_path: Path):
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
@@ -354,16 +360,17 @@ def kill(vm: Annotated[str, typer.Argument(autocompletion=running_vm_names)]):
             raise typer.Exit(code=1)
 
     running = get_running_vms()
-    if vm not in running:
-        typer.echo(f"No running VM registered under name '{vm}'", err=True)
-        raise typer.Exit(code=1)
+    for vm in vms:
+        if vm not in running:
+            typer.echo(f"No running VM registered under name '{vm}'", err=True)
+            raise typer.Exit(code=1)
 
-    monitor_path = DEFAULT_DATA_DIR / f"monitors/{vm}_monitor.sock"
-    if not monitor_path.exists():
-        typer.echo(f"Monitor socket not found for VM '{vm}'", err=True)
-        raise typer.Exit(code=1)
+        monitor_path = DEFAULT_DATA_DIR / f"monitors/{vm}_monitor.sock"
+        if not monitor_path.exists():
+            typer.echo(f"Monitor socket not found for VM '{vm}'", err=True)
+            raise typer.Exit(code=1)
 
-    send_qmp_shutdown(monitor_path)
+        send_qmp_shutdown(monitor_path)
 
     # There was some logic to remove the monitor manually here
     # BUt qemu appears to remove it automatically on shutdown.
