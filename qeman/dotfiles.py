@@ -43,7 +43,7 @@ def get_config():
 def get_images() -> list[Path]:
     return [f for f in IMAGES_DIR.glob("*") if not f.name.endswith(METADATA_SUFFIX)]
     
-def get_monitor(vm: str) -> Path:
+def get_monitor(image: str) -> Path:
     monitor_path = MONITOR_DIR / f"{image}_monitor.sock"
     return monitor_path
 
@@ -96,7 +96,6 @@ def set_running_vm(image_name: str, pid: int, ssh_port: int):
     json.dump(data, open(RUNNING_FILE, "w"), indent=2)
 
 def clean_stale_vms():
-    print("WOLOLO")
     if not RUNNING_FILE.exists():
         return
     data = json.load(open(RUNNING_FILE))

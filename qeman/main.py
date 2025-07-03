@@ -200,6 +200,7 @@ def run(
     if meta.get("dependents"):
         typer.echo(f"Image '{image_path.name}' has dependent forks. Running it directly may corrupt data.", err=True)
         raise typer.Exit(code=1)
+
     monitor_path = dotfiles.get_monitor(image)
     validate_qcow2_format(image_path)
 
