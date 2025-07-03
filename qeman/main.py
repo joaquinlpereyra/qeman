@@ -11,11 +11,10 @@ import json
 import time
 import itertools
 import threading
-import tomllib
 import psutil
 import socket
 import platform
-
+from qeman import dotfiles
 
 app = typer.Typer(help="Unified QEMU CLI tool")
 snap_app = typer.Typer(help="Manage internal qcow2 snapshots")
@@ -23,67 +22,20 @@ list_app = typer.Typer(help="List state, like images and running VMs")
 app.add_typer(snap_app, name="snap")
 app.add_typer(list_app, name="list")
 
-DEFAULT_DATA_DIR = Path(os.getenv("QEMAN_HOME", Path.home() / ".qeman"))
-IMAGES_DIR = DEFAULT_DATA_DIR / "imgs"
-LOCKS_DIR = DEFAULT_DATA_DIR / "locks"
-MONITOR_DIR = DEFAULT_DATA_DIR / "monitors"
-
 DEVNULL = open(os.devnull, "wb")
-
-CONFIG_PATH = DEFAULT_DATA_DIR / "config.toml"
-RUNNING_FILE = DEFAULT_DATA_DIR / "running.json"
-
-DEFAULT_DATA_DIR.mkdir(parents=True, exist_ok=True)
-IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-LOCKS_DIR.mkdir(parents=True, exist_ok=True)
-MONITOR_DIR.mkdir(parents=True, exist_ok=True)
-
-if not CONFIG_PATH.exists():
-    default_config = '''
-[binaries]
-qemu_img = "qemu-img"
-qemu_system = "qemu-system-x86_64"
-'''
-    CONFIG_PATH.write_text(default_config)
-
-METADATA_SUFFIX = ".meta.json"
-MONITOR_SUFFIX = ".monitor"
-SSH_BASE_PORT = 4242
-
-DEFAULT_BINARIES = {
-    "qemu_img": "qemu-img",
-    "qemu_system": "qemu-system-x86_64"
-}
-
 IS_GOOD_OS = not platform.system() == "Darwin"
 
-def pick_next_port(running: dict[str, dict]) -> int:
-    used = {info["ssh_port"] for info in running.values()}
-    port = SSH_BASE_PORT
-    while port in used:
-        port += 1
-    return port
-
 def complete_image_names(ctx: typer.Context, args: List[str], incomplete: str):
-    for img in sorted(IMAGES_DIR.glob("*")):
-        if incomplete in img.name and not img.name.endswith(METADATA_SUFFIX):
+    for img in sorted(dotfiles.get_images()):
+        if incomplete in img.name:
             yield img.name
 
 def running_vm_names(ctx: Context, args: List[str], incomplete: str):
     already_entered = set(args)
-    for vm in get_running_vms().keys():
+    for vm in dotfiles.get_running_vms().keys():
         if vm.startswith(incomplete) and vm not in already_entered:
             yield vm
 
-def load_config():
-    if CONFIG_PATH.exists():
-        with open(CONFIG_PATH, "rb") as f:
-            return tomllib.load(f)
-    return {}
-
-def get_binary(name: str) -> str:
-    config = load_config()
-    return config.get("binaries", {}).get(name, DEFAULT_BINARIES[name])
 
 def run_command(cmd: List[str], detach: bool = True) -> Optional[int]:
     if detach:
@@ -102,103 +54,78 @@ def run_command(cmd: List[str], detach: bool = True) -> Optional[int]:
             raise typer.Exit(result.returncode)
         return None
 
-def resolve_image(name_or_path: str) -> Path:
-    candidate = Path(name_or_path)
-    if candidate.exists():
-        return candidate
-    img_path = IMAGES_DIR / name_or_path
-    if img_path.exists():
-        return img_path
-    raise typer.BadParameter(f"Image '{name_or_path}' not found as file or in image registry")
-
 def validate_qcow2_format(image_path: Path):
-    result = subprocess.run([get_binary("qemu_img"), "info", "--output=json", str(image_path)], capture_output=True, text=True)
+    result = subprocess.run([dotfiles.get_binary("qemu_img"), "info", "--output=json", str(image_path)], capture_output=True, text=True)
     if result.returncode != 0 or 'qcow2' not in result.stdout:
         typer.echo(f"Invalid image format or failed to inspect: {image_path.name}", err=True)
         raise typer.Exit(code=1)
-
-def lock_image(image_path: Path):
-    lock_path = LOCKS_DIR / image_path.name
-    if lock_path.exists():
-        typer.echo(f"Image {image_path.name} appears to be in use.", err=True)
-        raise typer.Exit(code=1)
-    lock_path.touch()
-    return lock_path
-
-def unlock_image(lock_path: Path):
-    try:
-        lock_path.unlink()
-    except FileNotFoundError:
-        pass
-
-def write_metadata(image_path: Path, metadata: dict):
-    meta_path = image_path.with_suffix(image_path.suffix + METADATA_SUFFIX)
-    with open(meta_path, "w") as f:
-        json.dump(metadata, f, indent=2)
-
-def read_metadata(image_path: Path):
-    meta_path = image_path.with_suffix(image_path.suffix + METADATA_SUFFIX)
-    if meta_path.exists():
-        with open(meta_path) as f:
-            return json.load(f)
-    return {}
 
 @app.command()
 def fork(
     base_image: Annotated[str, typer.Argument(help="Base image to fork", autocompletion=complete_image_names,)],
     new_image: str):
-    base_path = resolve_image(base_image)
-    new_path = IMAGES_DIR / new_image
+    base_path = dotfiles.get_image(base_image)
+    new_path = dotfiles.get_image(new_image)
     if new_path.exists():
         raise typer.BadParameter(f"Target image already exists: {new_path}")
-    meta = read_metadata(base_path)
+    meta = dotfiles.get_metadata(base_path)
     deps = meta.get("dependents", [])
     if new_image not in deps:
         deps.append(new_image)
     meta["dependents"] = deps
-    write_metadata(base_path, meta)
-    cmd = [get_binary("qemu_img"), "create", "-f", "qcow2", "-F", "qcow2", "-b", str(base_path), str(new_path)]
+    dotfiles.set_metadata(base_path, meta)
+    cmd = [dotfiles.get_binary("qemu_img"), "create", "-f", "qcow2", "-F", "qcow2", "-b", str(base_path), str(new_path)]
     run_command(cmd)
 
 @snap_app.command("list")
 def snap_list(image: str):
-    image_path = resolve_image(image)
+    image_path = dotfiles.get_image(image)
     validate_qcow2_format(image_path)
-    lock_path = lock_image(image_path)
     try:
-        run_command([get_binary("qemu_img"), "snapshot", "-l", str(image_path)])
-    finally:
-        unlock_image(lock_path)
+        lock_path = dotfiles.lock_image(image_path)
+        run_command([dotfiles.get_binary("qemu_img"), "snapshot", "-l", str(image_path)])
+    except FileExistsError:
+        typer.echo(f"Image {image_path.name} appears to be in use.", err=True)
+        raise typer.Exit(code=1)
+
+    dotfiles.unlock_image(lock_path)
 
 @snap_app.command("create")
 def snap_create(image: str, name: str):
-    image_path = resolve_image(image)
+    image_path = dotfiles.get_image(image)
     validate_qcow2_format(image_path)
-    lock_path = lock_image(image_path)
     try:
-        run_command([get_binary("qemu_img"), "snapshot", "-c", name, str(image_path)])
-    finally:
-        unlock_image(lock_path)
+        lock_path = dotfiles.lock_image(image_path)
+        run_command([dotfiles.get_binary("qemu_img"), "snapshot", "-c", name, str(image_path)])
+    except FileExistsError:
+        typer.echo(f"Image {image_path.name} appears to be in use.", err=True)
+        raise typer.Exit(code=1)
+    dotfiles.unlock_image(lock_path)
 
 @snap_app.command("apply")
 def snap_apply(image: str, name: str):
-    image_path = resolve_image(image)
+    image_path = dotfiles.get_image(image)
     validate_qcow2_format(image_path)
-    lock_path = lock_image(image_path)
     try:
-        run_command([get_binary("qemu_img"), "snapshot", "-a", name, str(image_path)])
-    finally:
-        unlock_image(lock_path)
+        lock_path = dotfiles.lock_image(image_path)
+        run_command([dotfiles.get_binary("qemu_img"), "snapshot", "-a", name, str(image_path)])
+    except FileExistsError:
+        typer.echo(f"Image {image_path.name} appears to be in use.", err=True)
+        raise typer.Exit(code=1)
+    dotfiles.unlock_image(lock_path)
 
 @snap_app.command("delete")
 def snap_delete(image: str, name: str):
-    image_path = resolve_image(image)
+    image_path = dotfiles.get_image(image)
     validate_qcow2_format(image_path)
-    lock_path = lock_image(image_path)
     try:
-        run_command([get_binary("qemu_img"), "snapshot", "-d", name, str(image_path)])
-    finally:
-        unlock_image(lock_path)
+        lock_path = dotfiles.lock_image(image_path)
+        run_command([dotfiles.get_binary("qemu_img"), "snapshot", "-d", name, str(image_path)])
+    except FileExistsError:
+        typer.echo(f"Image {image_path.name} appears to be in use.", err=True)
+        raise typer.Exit(code=1)
+
+    dotfiles.unlock_image(lock_path)
 
 @app.command()
 def new(
@@ -206,16 +133,16 @@ def new(
     iso: Path):
     if not iso.exists():
         raise typer.BadParameter(f"Installer ISO not found: {iso}")
-    image_path = IMAGES_DIR / image_name
+    image_path = dotfiles.get_image(image_name)
     if not image_path.exists():
         typer.echo(f"Creating image: {image_path}")
-        subprocess.run([get_binary("qemu_img"), "create", "-f", "qcow2", str(image_path), "40G"], check=True)
+        subprocess.run([dotfiles.get_binary("qemu_img"), "create", "-f", "qcow2", str(image_path), "40G"], check=True)
     metadata = {"created_from_iso": str(iso), "notes": ""}
-    write_metadata(image_path, metadata)
-    monitor_path = MONITOR_DIR / f"{image}_monitor.sock"
+    dotfiles.set_metadata(image_path, metadata)
+    monitor_path = dotfiles.get_monitor(vm)
 
     cmd = [
-        get_binary("qemu_system"),
+        dotfiles.get_binary("qemu_system"),
         "-m", "8G", "-smp", "2",
         "-drive", f"file={image_path},format=qcow2,if=virtio",
         "-cdrom", str(iso), "-boot", "d",
@@ -247,7 +174,7 @@ def wait_with_spinner(stop_flag: threading.Event, seconds: int):
 
 @app.command()
 def connect(vm: str = Argument(..., autocompletion=running_vm_names)):
-    running = get_running_vms()
+    running = dotfiles.get_running_vms()
     info = running.get(vm)
     if not info:
         typer.echo(f"No VM named '{vm}' running.", err=True)
@@ -269,18 +196,18 @@ def run(
     graphical: bool = False,
     post: Optional[Path] = None):
     image_path = resolve_image(image)
-    meta = read_metadata(image_path)
+    meta = dotfiles.get_metadata(image_path)
     if meta.get("dependents"):
         typer.echo(f"Image '{image_path.name}' has dependent forks. Running it directly may corrupt data.", err=True)
         raise typer.Exit(code=1)
-    monitor_path = MONITOR_DIR / f"{image}_monitor.sock"
+    monitor_path = dotfiles.get_monitor(image)
     validate_qcow2_format(image_path)
 
-    running = get_running_vms()            # load existing
-    ssh_port = pick_next_port(running)
+    running = dotfiles.get_running_vms()           
+    ssh_port = dotfiles.get_next_ssh_port(running)
 
     cmd = [
-        get_binary("qemu_system"), "-m", "8G", "-smp", "4",
+        dotfiles.get_binary("qemu_system"), "-m", "8G", "-smp", "4",
         "-drive", f"file={image_path},format=qcow2,if=virtio", "-boot", "c",
         "-netdev", f"user,id=net0,hostfwd=tcp::{ssh_port}-:22",
         "-device", "virtio-net-pci,netdev=net0",
@@ -311,7 +238,7 @@ def run(
         cmd += ["--display", "none"]
 
     pid = run_command(cmd)
-    register_running_vm(image, pid, ssh_port)
+    dotfiles.set_running_vm(image, pid, ssh_port)
 
     if post:
         typer.echo(f"Waiting for VM to boot to run post script: {post}")
@@ -325,21 +252,6 @@ def run(
             subprocess.run([str(post_path)], check=True)
         except subprocess.CalledProcessError as e:
             typer.echo(f"Post-run script failed: {e}", err=True)
-
-def register_running_vm(image_name: str, pid: int, ssh_port: int):
-    RUNNING_FILE.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        data = json.load(open(RUNNING_FILE)) if RUNNING_FILE.exists() else {}
-        data[image_name] = {"pid": pid, "ssh_port": ssh_port}
-        json.dump(data, open(RUNNING_FILE, "w"), indent=2)
-    except Exception as e:
-        typer.echo(f"Failed to write running registry: {e}", err=True)
-
-def get_running_vms() -> dict:
-    if not RUNNING_FILE.exists():
-        return {}
-    data = json.load(open(RUNNING_FILE))
-    return data
 
 @app.command()
 def kill(vms: Annotated[List[str], typer.Argument(autocompletion=running_vm_names)]):
@@ -359,13 +271,13 @@ def kill(vms: Annotated[List[str], typer.Argument(autocompletion=running_vm_name
             typer.echo(f"QMP command failed: {e}", err=True)
             raise typer.Exit(code=1)
 
-    running = get_running_vms()
+    running = dotfiles.get_running_vms()
     for vm in vms:
         if vm not in running:
             typer.echo(f"No running VM registered under name '{vm}'", err=True)
             raise typer.Exit(code=1)
 
-        monitor_path = DEFAULT_DATA_DIR / f"monitors/{vm}_monitor.sock"
+        monitor_path = dotfiles.get_monitor(vm)
         if not monitor_path.exists():
             typer.echo(f"Monitor socket not found for VM '{vm}'", err=True)
             raise typer.Exit(code=1)
@@ -375,12 +287,10 @@ def kill(vms: Annotated[List[str], typer.Argument(autocompletion=running_vm_name
     # There was some logic to remove the monitor manually here
     # BUt qemu appears to remove it automatically on shutdown.
 
-
-
 @app.command()
 def info(image: str):
-    image_path = resolve_image(image)
-    result = subprocess.run([get_binary("qemu_img"), "info", str(image_path)], capture_output=True, text=True)
+    image_path = dotfiles.get_image(image)
+    result = subprocess.run([dotfiles.get_binary("qemu_img"), "info", str(image_path)], capture_output=True, text=True)
     if result.returncode != 0:
         typer.echo("Failed to retrieve image info.", err=True)
         raise typer.Exit(code=1)
@@ -393,10 +303,8 @@ def version():
 @list_app.command("images")
 def list_cmd_images():
     out = []
-    for img in sorted(IMAGES_DIR.glob("*")):
-        if img.name.endswith(METADATA_SUFFIX):
-            continue
-        meta = read_metadata(img)
+    for img in sorted(dotfiles.get_images()):
+        meta = dotfiles.get_metadata(img)
         # include name + all metadata keys
         entry = {"name": img.name, **meta}
         out.append(entry)
@@ -405,7 +313,7 @@ def list_cmd_images():
 
 @list_app.command("vms")
 def list_cmd_vms():
-    running = get_running_vms()
+    running = dotfiles.get_running_vms()
     out = []
     for name, info in running.items():
         pid = info["pid"]
@@ -428,5 +336,10 @@ def list_cmd_vms():
 
 
 
+# main.py should never by a library anyway, 
+# so no worries about putting this in the top level 
+# we generally does not trigger the if __name__ == "__main__"
+# block as the entrypoint is `app()`
+dotfiles.clean_stale_vms()
 if __name__ == "__main__":
     app()
