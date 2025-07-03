@@ -14,6 +14,7 @@ import threading
 import tomllib
 import psutil
 import socket
+import platform
 
 
 app = typer.Typer(help="Unified QEMU CLI tool")
@@ -53,6 +54,9 @@ DEFAULT_BINARIES = {
     "qemu_img": "qemu-img",
     "qemu_system": "qemu-system-x86_64"
 }
+
+IS_GOOD_OS = not platform.system() == "Darwin"
+
 def pick_next_port(running: dict[str, dict]) -> int:
     used = {info["ssh_port"] for info in running.values()}
     port = SSH_BASE_PORT
@@ -138,7 +142,7 @@ def read_metadata(image_path: Path):
 
 @app.command()
 def fork(
-    base_image: Annotated[str, typer.Argument(help="Base image to fork", autocompletion=complete_image_names,)], 
+    base_image: Annotated[str, typer.Argument(help="Base image to fork", autocompletion=complete_image_names,)],
     new_image: str):
     base_path = resolve_image(base_image)
     new_path = IMAGES_DIR / new_image
@@ -192,7 +196,7 @@ def snap_delete(image: str, name: str):
 
 @app.command()
 def new(
-    image_name: str, 
+    image_name: str,
     iso: Path):
     if not iso.exists():
         raise typer.BadParameter(f"Installer ISO not found: {iso}")
@@ -206,13 +210,17 @@ def new(
 
     cmd = [
         get_binary("qemu_system"),
-        "-enable-kvm", "-m", "8G", "-cpu", "host", "-smp", "2",
+        "-m", "8G", "-smp", "2",
         "-drive", f"file={image_path},format=qcow2,if=virtio",
         "-cdrom", str(iso), "-boot", "d",
         "-netdev", "user,id=net0", "-device", "virtio-net-pci,netdev=net0",
         "-qmp-pretty", f"unix:{monitor_path},server,nowait",
         "--display", "gtk"
     ]
+
+    if IS_GOOD_OS:
+        cmd += ["--enable-kvm", "-cpu", "host"]
+
     run_command(cmd)
 
 def spinner(stop_flag: threading.Event):
@@ -250,9 +258,9 @@ def connect(vm: str = Argument(..., autocompletion=running_vm_names)):
 
 @app.command()
 def run(
-    image: Annotated[str, Argument(autocompletion=complete_image_names, help="Image to run")], 
-    mount: Optional[Path] = None, 
-    graphical: bool = False, 
+    image: Annotated[str, Argument(autocompletion=complete_image_names, help="Image to run")],
+    mount: Optional[Path] = None,
+    graphical: bool = False,
     post: Optional[Path] = None):
     image_path = resolve_image(image)
     meta = read_metadata(image_path)
@@ -266,7 +274,7 @@ def run(
     ssh_port = pick_next_port(running)
 
     cmd = [
-        get_binary("qemu_system"), "-enable-kvm", "-m", "8G", "-cpu", "host", "-smp", "4",
+        get_binary("qemu_system"), "-m", "8G", "-smp", "4",
         "-drive", f"file={image_path},format=qcow2,if=virtio", "-boot", "c",
         "-netdev", f"user,id=net0,hostfwd=tcp::{ssh_port}-:22",
         "-device", "virtio-net-pci,netdev=net0",
@@ -274,14 +282,23 @@ def run(
         "-qmp-pretty", f"unix:{monitor_path},server,nowait",
         "-boot", "order=c",
     ]
+    if IS_GOOD_OS:
+        cmd += [
+            "--enable-kvm", "-cpu", "host"
+        ]
+
     if mount:
         cmd += [
-            "-fsdev", f"local,id=fsdev0,path={mount},security_model=none",
+            # security_model=mapped maps uid,gid,model are mapped
+            # i.e.: qemu will try to translate permissions so that
+            # host/vm agree (i.e.: you will be able to write to files
+            # you own in the host from the vm)
+            "-fsdev", f"local,id=fsdev0,path={mount},security_model=mapped",
             "-device", "virtio-9p-pci,fsdev=fsdev0,mount_tag=quarantine"
         ]
 
     if graphical:
-        cmd += ["--display", "gtk", 
+        cmd += ["--display", "gtk",
                 "-chardev", "spicevmc,id=vdagent,name=vdagent",
                 "-device", "virtserialport,chardev=vdagent,name=com.redhat.spice.0"]
     else:
@@ -328,7 +345,7 @@ def kill(vm: Annotated[str, typer.Argument(autocompletion=running_vm_names)]):
 
                 s.sendall(b'{"execute":"qmp_capabilities"}\n')
                 time.sleep(0.1)
-                _ = s.recv(4096)  
+                _ = s.recv(4096)
 
                 s.sendall(b'{"execute":"system_powerdown"}\n')
                 time.sleep(0.1)
@@ -348,7 +365,7 @@ def kill(vm: Annotated[str, typer.Argument(autocompletion=running_vm_names)]):
 
     send_qmp_shutdown(monitor_path)
 
-    # There was some logic to remove the monitor manually here 
+    # There was some logic to remove the monitor manually here
     # BUt qemu appears to remove it automatically on shutdown.
 
 
@@ -381,7 +398,7 @@ def list_cmd_images():
 
 @list_app.command("vms")
 def list_cmd_vms():
-    running = get_running_vms() 
+    running = get_running_vms()
     out = []
     for name, info in running.items():
         pid = info["pid"]
