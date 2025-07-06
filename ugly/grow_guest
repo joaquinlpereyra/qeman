@@ -1,0 +1,16 @@
+#!/bin/bash
+set -e
+
+echo "🔧 Expanding partition, physical volume, and logical volume..."
+
+# 1. Resize the partition
+sudo growpart /dev/vda 3
+
+# 2. Resize the physical volume
+sudo pvresize /dev/vda3
+
+# 3. Extend the logical volume and filesystem
+sudo lvextend -r -l +100%FREE /dev/mapper/ubuntu--vg-ubuntu--lv
+
+echo "✅ All done. '/' should now use the full virtual disk."
+
