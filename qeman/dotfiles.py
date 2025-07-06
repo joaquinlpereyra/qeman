@@ -3,11 +3,14 @@ import json
 import tomllib
 import psutil
 import os
+from contextlib import contextmanager
+from typing import Generator, IO
 
 DEFAULT_DATA_DIR = Path(os.getenv("QEMAN_HOME", Path.home() / ".qeman"))
 IMAGES_DIR = DEFAULT_DATA_DIR / "imgs"
 LOCKS_DIR = DEFAULT_DATA_DIR / "locks"
 MONITOR_DIR = DEFAULT_DATA_DIR / "monitors"
+LOG_DIR = DEFAULT_DATA_DIR / "logs"
 
 CONFIG_PATH = DEFAULT_DATA_DIR / "config.toml"
 RUNNING_FILE = DEFAULT_DATA_DIR / "running.json"
@@ -16,6 +19,7 @@ DEFAULT_DATA_DIR.mkdir(parents=True, exist_ok=True)
 IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 LOCKS_DIR.mkdir(parents=True, exist_ok=True)
 MONITOR_DIR.mkdir(parents=True, exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 if not CONFIG_PATH.exists():
     default_config = '''
@@ -47,6 +51,9 @@ def get_monitor(image: str) -> Path:
     monitor_path = MONITOR_DIR / f"{image}_monitor.sock"
     return monitor_path
 
+def get_log_path(image: str) -> Path:
+    return LOG_DIR / f"{image}.log"
+
 def get_running_vms() -> dict:
     if not RUNNING_FILE.exists():
         return {}
@@ -71,6 +78,7 @@ def get_metadata(image_path: Path):
         with open(meta_path) as f:
             return json.load(f)
     return {}
+
 def get_image(image_name: str) -> Path:
     return IMAGES_DIR / image_name
 

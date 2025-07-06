@@ -14,7 +14,9 @@ import threading
 import psutil
 import socket
 import platform
+from typing import IO, Literal
 from qeman import dotfiles
+from qeman import logs
 
 app = typer.Typer(help="Unified QEMU CLI tool")
 snap_app = typer.Typer(help="Manage internal qcow2 snapshots")
@@ -37,22 +39,25 @@ def running_vm_names(ctx: Context, args: List[str], incomplete: str):
             yield vm
 
 
-def run_command(cmd: List[str], detach: bool = True) -> Optional[int]:
-    if detach:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=DEVNULL,
-            stderr=DEVNULL,
-            start_new_session=True
-        )
-        return proc.pid
-    else:
-        # blocking: let output through
-        result = subprocess.run(cmd)
-        if result.returncode != 0:
-            typer.echo(f"Command failed with exit {result.returncode}", err=True)
-            raise typer.Exit(result.returncode)
-        return None
+def run_command(cmd: List[str], log: Optional[IO[str]] = None) -> int:
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE if log else None,
+        stderr=subprocess.PIPE if log else None,
+        start_new_session=True
+    )
+
+    if log is None:
+        return proc.id
+
+    def stream(pipe: IO[bytes], stream_name: Literal["stdout", "stderr"]):
+        for line in pipe:
+            logs.write_stream(log_path, stream_name, line)
+
+    threading.Thread(target=stream, args=(proc.stdout, "stdout"), daemon=True).start()
+    threading.Thread(target=stream, args=(proc.stderr, "stderr"), daemon=True).start()
+
+    return proc.pid
 
 def validate_qcow2_format(image_path: Path):
     result = subprocess.run([dotfiles.get_binary("qemu_img"), "info", "--output=json", str(image_path)], capture_output=True, text=True)
@@ -75,7 +80,9 @@ def fork(
     meta["dependents"] = deps
     dotfiles.set_metadata(base_path, meta)
     cmd = [dotfiles.get_binary("qemu_img"), "create", "-f", "qcow2", "-F", "qcow2", "-b", str(base_path), str(new_path)]
-    run_command(cmd)
+
+    logs.write_event(new_image, "fork", {"dependent_of": "base_image"})
+    run_command(cmd, logs.log_file(new_image))
 
 @snap_app.command("list")
 def snap_list(image: str):
@@ -154,6 +161,7 @@ def new(
     if IS_GOOD_OS:
         cmd += ["--enable-kvm", "-cpu", "host"]
 
+    logs.write_event(image_name, "create")
     run_command(cmd)
 
 def spinner(stop_flag: threading.Event):
@@ -238,6 +246,8 @@ def run(
 
     pid = run_command(cmd)
     dotfiles.set_running_vm(image, pid, ssh_port)
+
+    logs.write_event(image, "run", {"pid": pid})
 
     if post:
         typer.echo(f"Waiting for VM to boot to run post script: {post}")
