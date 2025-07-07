@@ -1,4 +1,3 @@
-
 import typer
 from typing import List
 from typing_extensions import Annotated
@@ -48,7 +47,7 @@ def run_command(cmd: List[str], log: Optional[IO[str]] = None) -> int:
     )
 
     if log is None:
-        return proc.id
+        return proc.pid
 
     def stream(pipe: IO[bytes], stream_name: Literal["stdout", "stderr"]):
         for line in pipe:
