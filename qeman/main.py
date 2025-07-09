@@ -427,7 +427,7 @@ def code(vm: Annotated[str, Argument(autocompletion=running_vm_names)]):
     result_lines.extend(host_entry.strip().splitlines())
     ssh_config.write_text("\n".join(result_lines) + "\n")
 
-    subprocess.run(["code", f"--remote", f"ssh-remote+{vm}/home/j/quarantine"])
+    subprocess.run(["code", f"--folder-uri", f"vscode-remote://ssh-remote+{vm}/home/j/quarantine"])
 
 # main.py should never by a library anyway, 
 # so no worries about putting this in the top level 
