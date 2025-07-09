@@ -14,6 +14,7 @@ LOG_DIR = DEFAULT_DATA_DIR / "logs"
 
 CONFIG_PATH = DEFAULT_DATA_DIR / "config.toml"
 RUNNING_FILE = DEFAULT_DATA_DIR / "running.json"
+SSH_CONFIG = DEFAULT_DATA_DIR / "ssh"
 
 DEFAULT_DATA_DIR.mkdir(parents=True, exist_ok=True)
 IMAGES_DIR.mkdir(parents=True, exist_ok=True)
@@ -43,6 +44,9 @@ def get_config():
         with open(CONFIG_PATH, "rb") as f:
             return tomllib.load(f)
     return {}
+
+def get_ssh_config() -> Path:
+    return SSH_CONFIG
 
 def get_images() -> list[Path]:
     return [f for f in IMAGES_DIR.glob("*") if not f.name.endswith(METADATA_SUFFIX)]
@@ -82,15 +86,20 @@ def get_metadata(image_path: Path):
 def get_image(image_name: str) -> Path:
     return IMAGES_DIR / image_name
 
-def set_lock(image_path: Path):
-    lock_path = LOCKS_DIR / image_path.name
+@contextmanager
+def lock_image(image: str) -> Generator[None, None, None]:
+    lock_path = LOCKS_DIR / f"{image}.lock"
     if lock_path.exists():
         raise FileExistsError
     lock_path.touch()
-    return lock_path
+    try:
+        yield
+    finally:
+        if lock_path.exists():
+            lock_path.unlink()
 
-def unset_lock(lock_path: Path):
-    lock_path.unlink()
+def is_locked(image: str):
+    return (LOCKS_DIR / f"{image}.lock").exists()
 
 def set_metadata(image_path: Path, metadata: dict):
     meta_path = image_path.with_suffix(image_path.suffix + METADATA_SUFFIX)

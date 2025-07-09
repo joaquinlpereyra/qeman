@@ -306,7 +306,7 @@ def info(image: str):
 
 @app.command()
 def version():
-    typer.echo("qeman v0.2.0")
+    typer.echo("qeman v0.5.0")
 
 @list_app.command("images")
 def list_cmd_images():
@@ -342,7 +342,92 @@ def list_cmd_vms():
         })
     typer.echo(json.dumps(out, indent=2))
 
+@app.command()
+def rm(image: Annotated[str, Argument(help="Image to remove", autocompletion=complete_image_names)]):
+    image_path = dotfiles.get_image(image)
 
+    if not image_path.exists():
+        typer.echo(f"Image '{image}' not found.", err=True)
+        raise typer.Exit(code=1)
+
+    running = dotfiles.get_running_vms()
+    if image in running:
+        typer.echo(f"Cannot remove '{image}': VM is running.", err=True)
+        raise typer.Exit(code=1)
+
+    meta = dotfiles.get_metadata(image_path)
+    if meta.get("dependents"):
+        typer.echo(f"Cannot remove '{image}': it has dependent forks.", err=True)
+        raise typer.Exit(code=1)
+
+    if dotfiles.is_locked(image):
+        typer.echo(f"Image '{image}' appears to be locked. Inspect the lockfile at {dotfiles.LOCKS_DIR}", err=True)
+        raise typer.Exit(code=1)
+
+    # Remove image and associated files
+    image_path.unlink()
+    meta_path = dotfiles.get_metadata(image_path)
+    if meta_path.exists():
+        meta_path.unlink()
+
+    monitor_path = dotfiles.get_monitor(image)
+    if monitor_path.exists():
+        monitor_path.unlink()
+
+    log_path = dotfiles.get_log_path(image)
+    if log_path.exists():
+        log_path.unlink()
+
+@app.command()
+def code(vm: Annotated[str, Argument(autocompletion=running_vm_names)]):
+    """
+    Open VSCode in remote SSH mode for the specified VM.
+    User should manually append 
+        "Include ~/.qeman/ssh"
+    to their ~/.ssh_config for now
+    """
+
+    # Wonderfully inefficient method that 
+    # just rewrites the whole SSH config each 
+    # time like a madman. I'll improve later.
+    running = dotfiles.get_running_vms()
+    info = running.get(vm)
+    if not info:
+        typer.echo(f"VM '{vm}' is not running.", err=True)
+        raise typer.Exit(1)
+
+    ssh_port = info["ssh_port"]
+    ssh_config = dotfiles.get_ssh_config()
+
+    host_entry = f"""Host {vm}
+    HostName localhost
+    Port {ssh_port}
+    User j
+"""
+
+    lines = ssh_config.read_text().splitlines() if ssh_config.exists() else []
+    result_lines = []
+    skip = False
+
+    for line in lines:
+        if line.strip().startswith("Host "):
+            splitted = line.strip().split()
+            if len(splitted) != 2:
+                typer.echo(f"Weird SSH host entry: {line}", err=True)
+                raise typer.Exit(1)
+            # Host matches VM, skip it. We are going to rewrite it
+            if splitted[1] == vm:
+                skip = True
+                continue
+            # Host that does not match VM, stop skipping
+            skip = False
+        if not skip:
+            result_lines.append(line)
+
+    result_lines.extend(host_entry.strip().splitlines())
+    ssh_config.write_text("\n".join(result_lines) + "\n")
+
+    subprocess.run(["code", f"--remote", f"ssh-remote+{vm}/home/j/quarantine"])
 
 # main.py should never by a library anyway, 
 # so no worries about putting this in the top level 
