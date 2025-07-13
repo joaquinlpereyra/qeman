@@ -14,7 +14,6 @@ LOG_DIR = DEFAULT_DATA_DIR / "logs"
 
 CONFIG_PATH = DEFAULT_DATA_DIR / "config.toml"
 RUNNING_FILE = DEFAULT_DATA_DIR / "running.json"
-SSH_CONFIG = DEFAULT_DATA_DIR / "ssh"
 
 DEFAULT_DATA_DIR.mkdir(parents=True, exist_ok=True)
 IMAGES_DIR.mkdir(parents=True, exist_ok=True)
@@ -39,6 +38,10 @@ DEFAULT_BINARIES = {
     "qemu_system": "qemu-system-x86_64"
 } 
 
+DEFAULT_SSH_CONFIG = {
+    "key_path": "~/.ssh/qemu.pub"
+}
+
 def get_config():
     if CONFIG_PATH.exists():
         with open(CONFIG_PATH, "rb") as f:
@@ -46,7 +49,7 @@ def get_config():
     return {}
 
 def get_ssh_config() -> Path:
-    return SSH_CONFIG
+    return get_config().get("ssh", DEFAULT_SSH_CONFIG)
 
 def get_images() -> list[Path]:
     return [f for f in IMAGES_DIR.glob("*") if not f.name.endswith(METADATA_SUFFIX)]

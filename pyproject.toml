@@ -1,6 +1,6 @@
 [project]
 name = "qeman"
-version = "0.5.0"
+version = "0.6.0"
 requires-python = ">=3.8"
 description = "A Quick EMulator MANager"
 authors = [{ name = "Joaquin", email = "joaquinlpereyra@gmail.com" }]

@@ -26,6 +26,15 @@ app.add_typer(list_app, name="list")
 DEVNULL = open(os.devnull, "wb")
 IS_GOOD_OS = not platform.system() == "Darwin"
 
+def open_browser(url: str):
+    datadir = Path("~/.qeman/chrome").expanduser()
+    datadir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Opening browser at: {url}")
+    subprocess.run(["google-chrome", f"--app={url}", 
+                    f"--user-data-dir={datadir}"], check=False,
+                    capture_output=True)
+
 def complete_image_names(ctx: typer.Context, args: List[str], incomplete: str):
     for img in sorted(dotfiles.get_images()):
         if incomplete in img.name:
@@ -179,6 +188,19 @@ def wait_with_spinner(stop_flag: threading.Event, seconds: int):
     stop_flag.set()
     thread.join()
 
+def ssh_command(port): 
+    key_path = Path(dotfiles.get_ssh_config().get("key_path"))
+    key_path = str(key_path.expanduser())
+    ssh_cmd = ["ssh", "-p", str(port), 
+                # IdentityOnly: prevent the agent from offering 
+                # other identities than specified by the `key_path` here
+                "-o", "IdentitiesOnly=yes",
+                # Ignore our `.ssh` configuration file
+                "-F", "/dev/null",
+                "-i", str(key_path), "j@localhost"
+                ]
+    return ssh_cmd
+
 @app.command()
 def connect(vm: str = Argument(..., autocompletion=running_vm_names)):
     running = dotfiles.get_running_vms()
@@ -187,14 +209,12 @@ def connect(vm: str = Argument(..., autocompletion=running_vm_names)):
         typer.echo(f"No VM named '{vm}' running.", err=True)
         raise typer.Exit(1)
     port = info["ssh_port"]
-    args = [
-        "ssh",
+    ssh_cmd = ssh_command(port)
+    ssh_cmd += [
         "-oStrictHostKeyChecking=no",
         "-oUserKnownHostsFile=/dev/null",
-        f"-p{port}",
-        f"j@localhost"
     ]
-    os.execvp("ssh", args)
+    os.execvp("ssh", ssh_cmd[1:])
 
 @app.command()
 def run(
@@ -306,7 +326,7 @@ def info(image: str):
 
 @app.command()
 def version():
-    typer.echo("qeman v0.5.0")
+    typer.echo("qeman v0.6.0")
 
 @list_app.command("images")
 def list_cmd_images():
@@ -379,55 +399,50 @@ def rm(image: Annotated[str, Argument(help="Image to remove", autocompletion=com
         log_path.unlink()
 
 @app.command()
-def code(vm: Annotated[str, Argument(autocompletion=running_vm_names)]):
+def code(vm: str):
     """
-    Open VSCode in remote SSH mode for the specified VM.
-    User should manually append 
-        "Include ~/.qeman/ssh"
-    to their ~/.ssh_config for now
+    SSH into the VM, run `code tunnel`, extract the login code, validate it,
+    and open the browser if safe.
     """
 
-    # Wonderfully inefficient method that 
-    # just rewrites the whole SSH config each 
-    # time like a madman. I'll improve later.
     running = dotfiles.get_running_vms()
     info = running.get(vm)
     if not info:
         typer.echo(f"VM '{vm}' is not running.", err=True)
         raise typer.Exit(1)
 
-    ssh_port = info["ssh_port"]
-    ssh_config = dotfiles.get_ssh_config()
+    port = info["ssh_port"]
+    key_path = Path(dotfiles.get_ssh_config().get("key_path"))
+    key_path = str(key_path.expanduser())
 
-    host_entry = f"""Host {vm}
-    HostName localhost
-    Port {ssh_port}
-    User j
-"""
+    ssh_cmd = ssh_command(port) + ["code tunnel"]
 
-    lines = ssh_config.read_text().splitlines() if ssh_config.exists() else []
-    result_lines = []
-    skip = False
+    proc = subprocess.Popen(ssh_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
-    for line in lines:
-        if line.strip().startswith("Host "):
-            splitted = line.strip().split()
-            if len(splitted) != 2:
-                typer.echo(f"Weird SSH host entry: {line}", err=True)
-                raise typer.Exit(1)
-            # Host matches VM, skip it. We are going to rewrite it
-            if splitted[1] == vm:
-                skip = True
-                continue
-            # Host that does not match VM, stop skipping
-            skip = False
-        if not skip:
-            result_lines.append(line)
+    def monitor():
+        tunnel_exists = False 
+        for line in proc.stdout:
+            line = line.strip()
+            words = line.split()
 
-    result_lines.extend(host_entry.strip().splitlines())
-    ssh_config.write_text("\n".join(result_lines) + "\n")
+            if not tunnel_exists:
+                tunnel_exists = line.startswith("Connected to an existing tunnel")
 
-    subprocess.run(["code", f"--folder-uri", f"vscode-remote://ssh-remote+{vm}/home/j/quarantine"])
+            if not tunnel_exists and len(words) >= 5 and words[-5] == "https://github.com/login/device":
+                url, code = words[-5], words[-1]
+                if len(code) == 9 and code[4] == '-' and code.replace('-', '').isalnum() and code.isupper():
+                    open_browser(url)
+                    print(f"Code for login in {code}. Browser opened.")
+                    return
+            if tunnel_exists and len(words) == 7 and line.startswith('Open this link in your browser'):
+                open_browser(words[-1])
+                return
+
+    thread = threading.Thread(target=monitor, daemon=True)
+    thread.start()
+
+    print("Tunnel launched. Waiting for code or URL")
+    thread.join(timeout=10)
 
 # main.py should never by a library anyway, 
 # so no worries about putting this in the top level 
