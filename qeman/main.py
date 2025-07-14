@@ -31,7 +31,7 @@ def open_browser(url: str):
     datadir.mkdir(parents=True, exist_ok=True)
 
     print(f"Opening browser at: {url}")
-    subprocess.run(["google-chrome", f"--app={url}", 
+    subprocess.run(["google-chrome", f"--app={url}",
                     f"--user-data-dir={datadir}"], check=False,
                     capture_output=True)
 
@@ -188,11 +188,11 @@ def wait_with_spinner(stop_flag: threading.Event, seconds: int):
     stop_flag.set()
     thread.join()
 
-def ssh_command(port): 
+def ssh_command(port):
     key_path = Path(dotfiles.get_ssh_config().get("key_path"))
     key_path = str(key_path.expanduser())
-    ssh_cmd = ["ssh", "-p", str(port), 
-                # IdentityOnly: prevent the agent from offering 
+    ssh_cmd = ["ssh", "-p", str(port),
+                # IdentityOnly: prevent the agent from offering
                 # other identities than specified by the `key_path` here
                 "-o", "IdentitiesOnly=yes",
                 # Ignore our `.ssh` configuration file
@@ -214,7 +214,9 @@ def connect(vm: str = Argument(..., autocompletion=running_vm_names)):
         "-oStrictHostKeyChecking=no",
         "-oUserKnownHostsFile=/dev/null",
     ]
-    os.execvp("ssh", ssh_cmd[1:])
+    # sysargvs[0] must be the exec name again,
+    # so we repeat here
+    os.execvp("ssh", ssh_cmd)
 
 @app.command()
 def run(
@@ -402,7 +404,7 @@ def rm(image: Annotated[str, Argument(help="Image to remove", autocompletion=com
 def code(vm: str):
     """
     SSH into the VM, run `code tunnel`, extract the login code, validate it,
-    and open the browser if safe.
+    and open the browser.
     """
 
     running = dotfiles.get_running_vms()
@@ -420,10 +422,11 @@ def code(vm: str):
     proc = subprocess.Popen(ssh_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
     def monitor():
-        tunnel_exists = False 
+        tunnel_exists = False
         for line in proc.stdout:
             line = line.strip()
             words = line.split()
+            print(line)
 
             if not tunnel_exists:
                 tunnel_exists = line.startswith("Connected to an existing tunnel")
@@ -434,6 +437,7 @@ def code(vm: str):
                     open_browser(url)
                     print(f"Code for login in {code}. Browser opened.")
                     return
+
             if tunnel_exists and len(words) == 7 and line.startswith('Open this link in your browser'):
                 open_browser(words[-1])
                 return
@@ -444,8 +448,8 @@ def code(vm: str):
     print("Tunnel launched. Waiting for code or URL")
     thread.join(timeout=10)
 
-# main.py should never by a library anyway, 
-# so no worries about putting this in the top level 
+# main.py should never by a library anyway,
+# so no worries about putting this in the top level
 # we generally does not trigger the if __name__ == "__main__"
 # block as the entrypoint is `app()`
 dotfiles.clean_stale_vms()
