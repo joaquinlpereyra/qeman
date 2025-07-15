@@ -259,7 +259,7 @@ def run(
         ]
 
     if graphical:
-        cmd += ["--display", "gtk",
+        cmd += ["--display", "cocoa",
                 "-chardev", "spicevmc,id=vdagent,name=vdagent",
                 "-device", "virtserialport,chardev=vdagent,name=com.redhat.spice.0"]
     else:
