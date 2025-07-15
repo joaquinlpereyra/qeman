@@ -7,6 +7,8 @@ from contextlib import contextmanager
 from typing import Generator, IO
 
 DEFAULT_DATA_DIR = Path(os.getenv("QEMAN_HOME", Path.home() / ".qeman"))
+print("DEFAULT_DATA_DIR")
+print(DEFAULT_DATA_DIR)
 IMAGES_DIR = DEFAULT_DATA_DIR / "imgs"
 LOCKS_DIR = DEFAULT_DATA_DIR / "locks"
 MONITOR_DIR = DEFAULT_DATA_DIR / "monitors"
