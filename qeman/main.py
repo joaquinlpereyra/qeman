@@ -260,11 +260,13 @@ def run(
 
     if graphical:
         cmd += ["--display", "cocoa",
-                "-chardev", "spicevmc,id=vdagent,name=vdagent",
+                # "-chardev", "spicevmc,id=vdagent,name=vdagent",
                 "-device", "virtserialport,chardev=vdagent,name=com.redhat.spice.0"]
     else:
         cmd += ["--display", "none"]
 
+    print("COMMAND IS ")
+    print(cmd)
     pid = run_command(cmd)
     dotfiles.set_running_vm(image, pid, ssh_port)
 
