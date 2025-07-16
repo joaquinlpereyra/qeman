@@ -267,7 +267,7 @@ def run(
             cmd += ["--display", "cocoa"]
     else:
         cmd += ["--display", "none"]
-        
+
     pid = run_command(cmd)
     dotfiles.set_running_vm(image, pid, ssh_port)
 
