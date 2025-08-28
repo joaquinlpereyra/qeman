@@ -259,9 +259,12 @@ def run(
         ]
 
     if graphical:
-        cmd += ["--display", "gtk",
-                "-chardev", "spicevmc,id=vdagent,name=vdagent",
-                "-device", "virtserialport,chardev=vdagent,name=com.redhat.spice.0"]
+        if IS_GOOD_OS:
+            cmd += ["--display", "gtk",
+                    "-chardev", "spicevmc,id=vdagent,name=vdagent",
+                    "-device", "virtserialport,chardev=vdagent,name=com.redhat.spice.0"]
+        else: 
+            cmd += ["--display", "cocoa"]
     else:
         cmd += ["--display", "none"]
 
