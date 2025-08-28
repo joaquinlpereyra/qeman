@@ -36,10 +36,10 @@ SSH_BASE_PORT = 4242
 DEFAULT_BINARIES = {
     "qemu_img": "qemu-img",
     "qemu_system": "qemu-system-x86_64"
-} 
+}
 
 DEFAULT_SSH_CONFIG = {
-    "key_path": "~/.ssh/qemu.pub"
+    "key_path": "~/.ssh/qemu"
 }
 
 def get_config():
@@ -53,7 +53,7 @@ def get_ssh_config() -> Path:
 
 def get_images() -> list[Path]:
     return [f for f in IMAGES_DIR.glob("*") if not f.name.endswith(METADATA_SUFFIX)]
-    
+
 def get_monitor(image: str) -> Path:
     monitor_path = MONITOR_DIR / f"{image}_monitor.sock"
     return monitor_path

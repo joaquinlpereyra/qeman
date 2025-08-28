@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ARCH="$(dpkg --print-architecture)"
+USER_SHELL_RC="${HOME}/.zshrc"
+
+need_cmd() { command -v "$1" >/dev/null 2>&1; }
+ensure_sudo() { [ "$EUID" -eq 0 ] || sudo -v; }
+append_once() { local l="$1" f="$2"; grep -Fqs "$l" "$f" || printf '\n%s\n' "$l" >> "$f"; }
+
+echo "==> Refreshing APT and essentials"
+ensure_sudo
+sudo apt-get update -y
+sudo apt-get install -y curl wget ca-certificates gnupg lsb-release software-properties-common
+
+# ---------------- ZSH ----------------
+echo "==> Installing Zsh and making it default"
+sudo apt-get install -y zsh
+if [ "$SHELL" != "$(command -v zsh)" ]; then
+  chsh -s "$(command -v zsh)"
+fi
+
+# minimal .zshrc
+cat > "$USER_SHELL_RC" <<'EOF'
+# ---------- history ----------
+HISTFILE=$HOME/.zsh_history
+HISTSIZE=10000
+SAVEHIST=10000
+setopt inc_append_history share_history hist_ignore_all_dups hist_reduce_blanks
+
+# ---------- quality of life ----------
+setopt autocd extendedglob correct
+setopt interactivecomments
+unsetopt beep
+
+# ---------- completion ----------
+autoload -Uz compinit; compinit
+zstyle ':completion:*' completer _complete _ignored
+zstyle ':completion:*' menu select
+zstyle ':completion:*' list-colors ''
+zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z}' 'r:|[._-]=* r:|=*' 'l:|=* r:|=*'
+
+# arrow keys search history by prefix
+autoload -Uz up-line-or-beginning-search down-line-or-beginning-search
+zle -N up-line-or-beginning-search
+zle -N down-line-or-beginning-search
+bindkey "${key[Up]}" up-line-or-beginning-search
+bindkey "${key[Down]}" down-line-or-beginning-search
+
+# ---------- colors + git info ----------
+autoload -Uz colors; colors
+autoload -Uz vcs_info
+zstyle ':vcs_info:*' enable git
+zstyle ':vcs_info:git*' check-for-changes true
+zstyle ':vcs_info:git*' formats '(%b%u%f)'
+zstyle ':vcs_info:git*' actionformats '(%b|%a%u%f)'
+precmd() { vcs_info }
+
+# ---------- prompt ----------
+local ret='%(?..%F{red}✖ %?%f)'
+RPROMPT='%F{cyan}%*%f %F{yellow}'"$ret"''
+
+PROMPT='%F{green}%n%f@%F{blue}%m%f %F{magenta}%~%f %F{yellow}${vcs_info_msg_0_}%f
+%F{cyan}❯%f '
+PROMPT2='%F{cyan}…%f '
+EOF

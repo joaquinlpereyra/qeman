@@ -1,0 +1,25 @@
+#!/bin/bash
+set -euo pipefail
+
+FSTAB_LINE="quarantine /home/j/quarantine 9p trans=virtio,version=9p2000.L,rw,uid=1000,gid=1000,defaults,nofail,x-systemd.device-timeout=1 0 0"
+
+# 1. Append the fstab line if it doesn't exist
+if ! grep -Fxq "$FSTAB_LINE" /etc/fstab; then
+    echo "$FSTAB_LINE" | sudo tee -a /etc/fstab
+fi
+
+# 2. Set GRUB timeout to 0
+sudo sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/' /etc/default/grub
+sudo update-grub
+
+# 3. Enable autologin for user `j`
+# Works with systemd-based login manager (e.g., getty)
+
+sudo mkdir -p /etc/systemd/system/getty@tty1.service.d
+cat <<EOF | sudo tee /etc/systemd/system/getty@tty1.service.d/override.conf
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin j --noclear %I \$TERM
+EOF
+
+sudo systemctl daemon-reexec

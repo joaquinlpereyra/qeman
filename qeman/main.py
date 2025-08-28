@@ -31,9 +31,9 @@ def open_browser(url: str):
     datadir.mkdir(parents=True, exist_ok=True)
 
     print(f"Opening browser at: {url}")
-    subprocess.run(["google-chrome", f"--app={url}",
-                    f"--user-data-dir={datadir}"], check=False,
-                    capture_output=True)
+    subprocess.Popen(["google-chrome", f"--app={url}",
+                    f"--user-data-dir={datadir}"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 def complete_image_names(ctx: typer.Context, args: List[str], incomplete: str):
     for img in sorted(dotfiles.get_images()):
@@ -154,7 +154,7 @@ def new(
         subprocess.run([dotfiles.get_binary("qemu_img"), "create", "-f", "qcow2", str(image_path), "100G"], check=True)
     metadata = {"created_from_iso": str(iso), "notes": ""}
     dotfiles.set_metadata(image_path, metadata)
-    monitor_path = dotfiles.get_monitor(vm)
+    monitor_path = dotfiles.get_monitor(image_path)
 
     cmd = [
         dotfiles.get_binary("qemu_system"),
@@ -169,7 +169,7 @@ def new(
     if IS_GOOD_OS:
         cmd += ["--enable-kvm", "-cpu", "host"]
 
-    logs.write_event(image_name, "create")
+    logs.write_event(image_name, "create", {})
     run_command(cmd)
 
 def spinner(stop_flag: threading.Event):
@@ -235,7 +235,7 @@ def run(
     ssh_port = dotfiles.get_next_ssh_port()
 
     cmd = [
-        dotfiles.get_binary("qemu_system"), "-m", "8G", "-smp", "4",
+        dotfiles.get_binary("qemu_system"), "-m", "12G", "-smp", "4",
         "-drive", f"file={image_path},format=qcow2,if=virtio", "-boot", "c",
         "-netdev", f"user,id=net0,hostfwd=tcp::{ssh_port}-:22",
         "-device", "virtio-net-pci,netdev=net0",
@@ -420,13 +420,14 @@ def code(vm: str):
     ssh_cmd = ssh_command(port) + ["code tunnel"]
 
     proc = subprocess.Popen(ssh_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    done = threading.Event()
 
     def monitor():
         tunnel_exists = False
-        for line in proc.stdout:
+        for line in iter(proc.stdout.readline, ''):
             line = line.strip()
-            words = line.split()
             print(line)
+            words = line.split()
 
             if not tunnel_exists:
                 tunnel_exists = line.startswith("Connected to an existing tunnel")
@@ -436,17 +437,22 @@ def code(vm: str):
                 if len(code) == 9 and code[4] == '-' and code.replace('-', '').isalnum() and code.isupper():
                     open_browser(url)
                     print(f"Code for login in {code}. Browser opened.")
+                    done.set()
                     return
 
-            if tunnel_exists and len(words) == 7 and line.startswith('Open this link in your browser'):
+            if len(words) == 7 and line.startswith('Open this link in your browser'):
                 open_browser(words[-1])
+                done.set()
                 return
+
 
     thread = threading.Thread(target=monitor, daemon=True)
     thread.start()
+    if done.wait(timeout=5):
+        return
+    else:
+        typer.echo(f"VM '{vm}' tunnel timeout.")
 
-    print("Tunnel launched. Waiting for code or URL")
-    thread.join(timeout=10)
 
 # main.py should never by a library anyway,
 # so no worries about putting this in the top level
