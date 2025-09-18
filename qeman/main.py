@@ -426,28 +426,36 @@ def code(vm: str):
     done = threading.Event()
 
     def monitor():
+        link = None
+        login_code = None
         tunnel_exists = False
         for line in iter(proc.stdout.readline, ''):
             line = line.strip()
-            print(line)
+            # skip license agreement
+            if line.startswith("*"): continue 
             words = line.split()
 
             if not tunnel_exists:
                 tunnel_exists = line.startswith("Connected to an existing tunnel")
 
-            if not tunnel_exists and len(words) >= 5 and words[-5] == "https://github.com/login/device":
+            if len(words) >= 5 and words[-5] == "https://github.com/login/device":
                 url, code = words[-5], words[-1]
                 if len(code) == 9 and code[4] == '-' and code.replace('-', '').isalnum() and code.isupper():
-                    open_browser(url)
+                    link = url
+                    login_code = code
                     print(f"Code for login in {code}. Browser opened.")
-                    done.set()
-                    return
 
             if len(words) == 7 and line.startswith('Open this link in your browser'):
-                open_browser(words[-1])
+                link = words[-1]
+            
+            # when we have a link, we either have a link to an existing
+            # tunnel or we have a link to a new tunnel to login
+            if link:
+                if not tunnel_exists and login_code:
+                    print(f"Code for login: {login_code}. Browser opened.")
+                open_browser(link)
                 done.set()
                 return
-
 
     thread = threading.Thread(target=monitor, daemon=True)
     thread.start()
