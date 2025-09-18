@@ -250,10 +250,10 @@ def run(
 
     if mount:
         cmd += [
-            # security_model=mapped maps uid,gid,model are mapped
-            # i.e.: qemu will try to translate permissions so that
-            # host/vm agree (i.e.: you will be able to write to files
-            # you own in the host from the vm)
+            # security_model=mapped makes it so that 
+            # the 9p mount is owned by the user inside the VM
+            # writes permissions in the extended attributes 
+            # thus, modifying permissions inside the VM does not affect host
             "-fsdev", f"local,id=fsdev0,path={mount},security_model=mapped",
             "-device", "virtio-9p-pci,fsdev=fsdev0,mount_tag=quarantine"
         ]
