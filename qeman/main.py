@@ -11,12 +11,12 @@ import json
 import time
 import itertools
 import threading
-import psutil
 import socket
 import platform
 from typing import IO, Literal
 from qeman import dotfiles
 from qeman import logs
+from qeman import ps
 
 app = typer.Typer(help="Unified QEMU CLI tool")
 snap_app = typer.Typer(help="Manage internal qcow2 snapshots")
@@ -351,20 +351,15 @@ def list_cmd_vms():
     out = []
     for name, info in running.items():
         pid = info["pid"]
-        try:
-            p = psutil.Process(pid)
-            mem_rss = p.memory_info().rss
-            cpu_pct = p.cpu_percent(interval=0.1)
-        except psutil.NoSuchProcess:
-            mem_rss = None
-            cpu_pct = None
+        mem = ps.rss_mb(pid)
+        cpu = ps.cpu_percent(pid)
 
         out.append({
             "name":       name,
             "pid":        pid,
             "ssh_port":   info.get("ssh_port"),
-            "memory_rss": f"{(mem_rss or 0) / (1024**2):.1f}mb" if mem_rss is not None else "-",
-            "cpu_percent": cpu_pct if cpu_pct is not None else "-" ,
+            "memory_rss": f"{mem:.1f}mb" if mem is not None else "-",
+            "cpu_percent": f"{cpu:.1f}" if cpu is not None else "-",
         })
     typer.echo(json.dumps(out, indent=2))
 
