@@ -1,3 +1,4 @@
+import urllib
 import typer
 from typing import List
 from typing_extensions import Annotated
@@ -403,12 +404,35 @@ def rm(image: Annotated[str, Argument(help="Image to remove", autocompletion=com
     if log_path.exists():
         log_path.unlink()
 
+
+
 @app.command()
 def code(vm: str):
     """
-    SSH into the VM, run `code tunnel`, extract the login code, validate it,
-    and open the browser.
+    SSH into the VM, run `code tunnel`, grab the device link (and code), open browser.
+    Leaves the remote tunnel running.
     """
+
+
+    def _first_url_in(line: str) -> str | None:
+        for tok in line.split():
+            if tok.startswith(("http://", "https://")):
+                return tok
+        return None
+
+    def _is_allowed(url: str) -> bool:
+        ALLOWED_HOSTS = {"github.com", "vscode.dev"}
+        try:
+            u = urllib.parse.urlparse(url)
+            return u.scheme == "https" and u.netloc in ALLOWED_HOSTS
+        except Exception:
+            return False
+
+    def _maybe_device_code(line: str) -> str | None:
+        for tok in line.split():
+            if len(tok) == 9 and tok[4] == "-" and tok.replace("-", "").isalnum() and tok.isupper():
+                return tok
+        return None
 
     running = dotfiles.get_running_vms()
     info = running.get(vm)
@@ -417,53 +441,66 @@ def code(vm: str):
         raise typer.Exit(1)
 
     port = info["ssh_port"]
-    key_path = Path(dotfiles.get_ssh_config().get("key_path"))
-    key_path = str(key_path.expanduser())
+    ssh_cmd = ssh_command(port) + ["code", "tunnel"]
 
-    ssh_cmd = ssh_command(port) + ["code tunnel"]
+    proc = subprocess.Popen(
+        ssh_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,  # line buffered
+    )
 
-    proc = subprocess.Popen(ssh_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     done = threading.Event()
 
     def monitor():
-        link = None
-        login_code = None
+        link: str | None = None
+        code: str | None = None
         tunnel_exists = False
-        for line in iter(proc.stdout.readline, ''):
-            line = line.strip()
-            # skip license agreement
-            if line.startswith("*"): continue 
-            words = line.split()
 
-            if not tunnel_exists:
-                tunnel_exists = line.startswith("Connected to an existing tunnel")
+        if not proc.stdout:
+            done.set()
+            return
 
-            if len(words) >= 5 and words[-5] == "https://github.com/login/device":
-                url, code = words[-5], words[-1]
-                if len(code) == 9 and code[4] == '-' and code.replace('-', '').isalnum() and code.isupper():
-                    link = url
-                    login_code = code
-                    print(f"Code for login in {code}. Browser opened.")
+        opened = False
+        for raw in iter(proc.stdout.readline, ""):
+            line = raw.strip()
+            if not line or line.startswith("*"):
+                continue
 
-            if len(words) == 7 and line.startswith('Open this link in your browser'):
-                link = words[-1]
-            
-            # when we have a link, we either have a link to an existing
-            # tunnel or we have a link to a new tunnel to login
-            if link:
-                if not tunnel_exists and login_code:
-                    print(f"Code for login: {login_code}. Browser opened.")
-                open_browser(link)
-                done.set()
-                return
+            if line.startswith("Connected to an existing tunnel"):
+                tunnel_exists = True
 
-    thread = threading.Thread(target=monitor, daemon=True)
-    thread.start()
-    if done.wait(timeout=5):
+            # pick up code if we see one
+            if code is None:
+                maybe = _maybe_device_code(line)
+                if maybe:
+                    code = maybe
+
+            url = _first_url_in(line)
+            if url:
+                if not _is_allowed(url):
+                    typer.echo(f"Refusing to open untrusted URL: {url}", err=True)
+                    continue  # keep scanning; maybe a valid URL comes next
+
+                link = url
+                if not opened:
+                    if not tunnel_exists and code:
+                        typer.echo(f"Device code: {code}")
+                    time.sleep(0.5)  # tiny debounce, sometimes it hangs without it
+                    open_browser(link)  
+                    opened = True
+                    done.set()  # let the CLI return quickly
+                    return
+
+        done.set()  # EOF
         return
-    else:
-        typer.echo(f"VM '{vm}' tunnel timeout.")
 
+    t = threading.Thread(target=monitor, daemon=True)
+    t.start()
+
+    if not done.wait(timeout=5):
+        typer.echo(f"VM '{vm}' tunnel timeout.", err=True)
 
 # main.py should never by a library anyway,
 # so no worries about putting this in the top level
