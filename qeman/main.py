@@ -436,10 +436,15 @@ def code(vm: str):
         raise typer.Exit(1)
 
     port = info["ssh_port"]
-    ssh_cmd = ssh_command(port) + ["code", "tunnel"]
-
+    # run with nohup so tunnel process keeps running 
+    # in vm, write to log so we can read
+    # touch first so tail finds the file for sure
+    ssh_cmd = ssh_command(port) + ["touch /tmp/code-tunnel.log", "&&", 
+                                   "nohup", "code", "tunnel", ">", "/tmp/code-tunnel.log", "2>&1", "&"]
+    subprocess.run(ssh_cmd, shell=True)
+    read_cmd = ssh_command(port) + ["tail", "-F", "/tmp/code-tunnel.log"]
     proc = subprocess.Popen(
-        ssh_cmd,
+        read_cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -482,7 +487,7 @@ def code(vm: str):
                 if not opened:
                     if not tunnel_exists and code:
                         typer.echo(f"Device code: {code}")
-                    time.sleep(0.5)  # tiny debounce, sometimes it hangs without it
+                    time.sleep(1)  # tiny debounce, sometimes it hangs without it
                     open_browser(link)  
                     opened = True
                     done.set()  # let the CLI return quickly
