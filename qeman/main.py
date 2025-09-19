@@ -164,11 +164,12 @@ def new(
         "-cdrom", str(iso), "-boot", "d",
         "-netdev", "user,id=net0", "-device", "virtio-net-pci,netdev=net0",
         "-qmp-pretty", f"unix:{monitor_path},server,nowait",
-        "--display", "gtk"
     ]
 
     if IS_GOOD_OS:
-        cmd += ["--enable-kvm", "-cpu", "host"]
+        cmd += ["--enable-kvm", "-cpu", "host", "--display", "gtk"]
+    else:
+        cmd += ["--display", "cocoa"]
 
     logs.write_event(image_name, "create", {})
     run_command(cmd)
