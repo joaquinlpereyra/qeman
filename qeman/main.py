@@ -1,4 +1,4 @@
-import urllib
+import urllib.parse
 import typer
 from typing import List
 from typing_extensions import Annotated
@@ -197,11 +197,23 @@ def ssh_command(port):
                 # IdentityOnly: prevent the agent from offering
                 # other identities than specified by the `key_path` here
                 "-o", "IdentitiesOnly=yes",
+                # we are generating hosts like a madman and only locally 
+                # sometimes reusing ports
+                "-oStrictHostKeyChecking=no",
+                # ignore known hosts for same reason as above
+                "-oUserKnownHostsFile=/dev/null",
                 # Ignore our `.ssh` configuration file
                 "-F", "/dev/null",
                 "-i", str(key_path), "j@localhost"
                 ]
     return ssh_cmd
+
+def run_in_vm(port, cmd: str):
+    ssh_cmd = ssh_command(port)
+    ssh_cmd.append(cmd)
+    return subprocess.run(ssh_cmd,
+                    capture_output=True,
+                    check=True)
 
 @app.command()
 def connect(vm: str = Argument(..., autocompletion=running_vm_names)):
@@ -212,10 +224,6 @@ def connect(vm: str = Argument(..., autocompletion=running_vm_names)):
         raise typer.Exit(1)
     port = info["ssh_port"]
     ssh_cmd = ssh_command(port)
-    ssh_cmd += [
-        "-oStrictHostKeyChecking=no",
-        "-oUserKnownHostsFile=/dev/null",
-    ]
     # sysargvs[0] must be the exec name again,
     # so we repeat here
     os.execvp("ssh", ssh_cmd)
@@ -420,7 +428,7 @@ def code(vm: str):
         ALLOWED_HOSTS = {"github.com", "vscode.dev"}
         try:
             u = urllib.parse.urlparse(url)
-            return u.scheme == "https" and u.netloc in ALLOWED_HOSTS
+            return u.scheme == "https" and u.hostname in ALLOWED_HOSTS
         except Exception:
             return False
 
@@ -440,10 +448,9 @@ def code(vm: str):
     # run with nohup so tunnel process keeps running 
     # in vm, write to log so we can read
     # touch first so tail finds the file for sure
-    ssh_cmd = ssh_command(port) + ["touch /tmp/code-tunnel.log", "&&", 
-                                   "nohup", "code", "tunnel", ">", "/tmp/code-tunnel.log", "2>&1", "&"]
-    subprocess.run(ssh_cmd, shell=True)
-    read_cmd = ssh_command(port) + ["tail", "-F", "/tmp/code-tunnel.log"]
+    run_in_vm(port, "touch /tmp/code-tunnel.log && nohup code tunnel > /tmp/code-tunnel.log 2>&1 &")
+
+    read_cmd = ssh_command(port) + ["tail -F /tmp/code-tunnel.log"]
     proc = subprocess.Popen(
         read_cmd,
         stdout=subprocess.PIPE,
@@ -466,6 +473,7 @@ def code(vm: str):
         opened = False
         for raw in iter(proc.stdout.readline, ""):
             line = raw.strip()
+            print(line)
             if not line or line.startswith("*"):
                 continue
 
@@ -480,6 +488,7 @@ def code(vm: str):
 
             url = _first_url_in(line)
             if url:
+                url = url.strip()
                 if not _is_allowed(url):
                     typer.echo(f"Refusing to open untrusted URL: {url}", err=True)
                     continue  # keep scanning; maybe a valid URL comes next
