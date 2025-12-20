@@ -11,18 +11,22 @@ import json
 import time
 import itertools
 import threading
-import socket
 import platform
+import uuid
 from typing import IO, Literal
 from qeman import dotfiles
 from qeman import logs
 from qeman import ps
+from qeman import qmp
 
 app = typer.Typer(help="Unified QEMU CLI tool")
 snap_app = typer.Typer(help="Manage internal qcow2 snapshots")
 list_app = typer.Typer(help="List state, like images and running VMs")
+usb_app = typer.Typer(help="USB passthrough controls")
 app.add_typer(snap_app, name="snap")
 app.add_typer(list_app, name="list")
+app.add_typer(usb_app, name="usb")
+
 
 DEVNULL = open(os.devnull, "wb")
 IS_GOOD_OS = not platform.system() == "Darwin"
@@ -47,6 +51,14 @@ def running_vm_names(ctx: Context, args: List[str], incomplete: str):
         if vm.startswith(incomplete) and vm not in already_entered:
             yield vm
 
+def complete_usb_device_ids(ctx: typer.Context, incomplete: str):
+    vm = ctx.params.get("vm")
+    if not vm:
+        return []
+
+    for dev in dotfiles.list_usb_devices(vm):
+        if dev.startswith(incomplete):
+            yield dev
 
 def run_command(cmd: List[str], log: Optional[IO[str]] = None) -> int:
     proc = subprocess.Popen(
@@ -197,7 +209,7 @@ def ssh_command(port):
                 # IdentityOnly: prevent the agent from offering
                 # other identities than specified by the `key_path` here
                 "-o", "IdentitiesOnly=yes",
-                # we are generating hosts like a madman and only locally 
+                # we are generating hosts like a madman and only locally
                 # sometimes reusing ports
                 "-oStrictHostKeyChecking=no",
                 # ignore known hosts for same reason as above
@@ -212,6 +224,7 @@ def run_in_vm(port, cmd: str):
     ssh_cmd = ssh_command(port)
     ssh_cmd.append(cmd)
     return subprocess.run(ssh_cmd,
+                    text=True,
                     capture_output=True,
                     check=True)
 
@@ -245,11 +258,12 @@ def run(
     ssh_port = dotfiles.get_next_ssh_port()
 
     cmd = [
-        dotfiles.get_binary("qemu_system"), "-m", "12G", "-smp", "4",
+        dotfiles.get_binary("qemu_system"), "-m", "24G", "-smp", "4",
         "-drive", f"file={image_path},format=qcow2,if=virtio", "-boot", "c",
         "-netdev", f"user,id=net0,hostfwd=tcp::{ssh_port}-:22",
         "-device", "virtio-net-pci,netdev=net0",
         "-device", "virtio-serial", "-device", "virtio-balloon",
+        "-device", "qemu-xhci,id=xhci", # add usb support
         "-qmp-pretty", f"unix:{monitor_path},server,nowait",
         "-boot", "order=c",
     ]
@@ -260,9 +274,9 @@ def run(
 
     if mount:
         cmd += [
-            # security_model=mapped makes it so that 
+            # security_model=mapped makes it so that
             # the 9p mount is owned by the user inside the VM
-            # writes permissions in the extended attributes 
+            # writes permissions in the extended attributes
             # thus, modifying permissions inside the VM does not affect host
             "-fsdev", f"local,id=fsdev0,path={mount},security_model=mapped",
             "-device", "virtio-9p-pci,fsdev=fsdev0,mount_tag=quarantine"
@@ -270,10 +284,9 @@ def run(
 
     if graphical:
         if IS_GOOD_OS:
-            cmd += ["--display", "gtk",
-                    "-chardev", "spicevmc,id=vdagent,name=vdagent",
-                    "-device", "virtserialport,chardev=vdagent,name=com.redhat.spice.0"]
-        else: 
+            cmd += ["-display", "gtk",
+                    "-device", "virtio-gpu-pci"]
+        else:
             cmd += ["--display", "cocoa"]
     else:
         cmd += ["--display", "none"]
@@ -298,21 +311,6 @@ def run(
 
 @app.command()
 def kill(vms: Annotated[List[str], typer.Argument(autocompletion=running_vm_names)]):
-    def send_qmp_shutdown(monitor_path: Path):
-        try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-                s.connect(str(monitor_path))
-                s.settimeout(2)
-
-                s.sendall(b'{"execute":"qmp_capabilities"}\n')
-                time.sleep(0.1)
-                _ = s.recv(4096)
-
-                s.sendall(b'{"execute":"system_powerdown"}\n')
-                time.sleep(0.1)
-        except Exception as e:
-            typer.echo(f"QMP command failed: {e}", err=True)
-            raise typer.Exit(code=1)
 
     running = dotfiles.get_running_vms()
     for vm in vms:
@@ -325,7 +323,7 @@ def kill(vms: Annotated[List[str], typer.Argument(autocompletion=running_vm_name
             typer.echo(f"Monitor socket not found for VM '{vm}'", err=True)
             raise typer.Exit(code=1)
 
-        send_qmp_shutdown(monitor_path)
+        qmp.send_shutdown(monitor_path)
 
     # There was some logic to remove the monitor manually here
     # BUt qemu appears to remove it automatically on shutdown.
@@ -445,7 +443,7 @@ def code(vm: str):
         raise typer.Exit(1)
 
     port = info["ssh_port"]
-    # run with nohup so tunnel process keeps running 
+    # run with nohup so tunnel process keeps running
     # in vm, write to log so we can read
     # touch first so tail finds the file for sure
     run_in_vm(port, "touch /tmp/code-tunnel.log && nohup code tunnel > /tmp/code-tunnel.log 2>&1 &")
@@ -498,7 +496,7 @@ def code(vm: str):
                     if not tunnel_exists and code:
                         typer.echo(f"Device code: {code}")
                     time.sleep(1)  # tiny debounce, sometimes it hangs without it
-                    open_browser(link)  
+                    open_browser(link)
                     opened = True
                     done.set()  # let the CLI return quickly
                     return
@@ -511,6 +509,82 @@ def code(vm: str):
 
     if not done.wait(timeout=5):
         typer.echo(f"VM '{vm}' tunnel timeout.", err=True)
+
+
+@usb_app.command("list")
+def usb_list(vm: Annotated[str, Argument(autocompletion=running_vm_names)]):
+    """List host USB devices visible to QEMU."""
+    running = dotfiles.get_running_vms()
+    info = running.get(vm)
+    if not info:
+        typer.echo(f"VM '{vm}' is not running.", err=True)
+        raise typer.Exit(1)
+    port = info["ssh_port"]
+    proc = run_in_vm(port, "lsusb")
+    print(proc.stdout)
+
+@usb_app.command("attach")
+def usb_attach(
+    vm: Annotated[str, Argument(autocompletion=running_vm_names)],
+    vendor: Optional[str] = typer.Option(None, "--vendor", help="hex, e.g. 0x2c97"),
+    product: Optional[str] = typer.Option(None, "--product", help="hex, e.g. 0x0001"),
+    hostbus: Optional[int] = typer.Option(None, "--hostbus", help="lsusb Bus number"),
+    hostaddr: Optional[int] = typer.Option(None, "--hostaddr", help="lsusb Device address"),
+    controller_id: str = typer.Option("xhci", "--controller-id", help="xHCI id in guest"),
+):
+    """
+    Attach a host USB device to the running VM.
+    Provide (--vendor,--product) OR (--hostbus,--hostaddr).
+    """
+
+    running = dotfiles.get_running_vms()
+    if vm not in running:
+        typer.echo(f"VM '{vm}' is not running.", err=True); raise typer.Exit(1)
+    mon = dotfiles.get_monitor(vm)
+
+    # Ensure an xHCI controller exists (add if missing)
+    try:
+        qtree = qmp.hmp(mon, "info qtree")
+        if f'id "{controller_id}"' not in qtree:
+            qmp.exec(mon, "device_add", {"driver": "qemu-xhci", "id": controller_id, "bus": "pcie.0"})
+    except Exception as e:
+        typer.echo(f"Warning: could not verify/add xHCI: {e}", err=True)
+
+    dev_id = f"usb_{uuid.uuid4().hex[:8]}"
+    args: dict = {"driver": "usb-host", "id": dev_id}
+    if vendor and product:
+        args["vendorid"] = int(vendor, 16) if isinstance(vendor, str) else vendor
+        args["productid"] = int(product, 16) if isinstance(product, str) else product
+    elif hostbus is not None and hostaddr is not None:
+        args["hostbus"] = hostbus
+        args["hostaddr"] = hostaddr
+    else:
+        typer.echo("Provide --vendor/--product OR --hostbus/--hostaddr", err=True)
+        raise typer.Exit(2)
+
+    resp = qmp.exec(mon, "device_add", args)
+    if "error" in resp:
+        typer.echo(f"Attach failed: {resp['error']}", err=True); raise typer.Exit(1)
+    dotfiles.add_usb_device(vm, dev_id)
+    typer.echo(f"Attached as {dev_id}")
+
+@usb_app.command("detach")
+def usb_detach(
+    vm: Annotated[str, Argument(autocompletion=running_vm_names)],
+    dev_id: str = typer.Argument(..., help="Device id to detach, e.g. usb_abcd1234", autocompletion=complete_usb_device_ids),
+):
+    """
+    Detach a previously attached USB device from the running VM.
+    """
+    running = dotfiles.get_running_vms()
+    if vm not in running:
+        typer.echo(f"VM '{vm}' is not running.", err=True); raise typer.Exit(1)
+    mon = dotfiles.get_monitor(vm)
+
+    resp = qmp.exec(mon, "device_del", {"id": dev_id})
+    if "error" in resp:
+        typer.echo(f"Detach failed: {resp['error']}", err=True); raise typer.Exit(1)
+    typer.echo(f"Detached {dev_id}")
 
 # main.py should never by a library anyway,
 # so no worries about putting this in the top level

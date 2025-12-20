@@ -3,6 +3,7 @@ import json
 import tomllib
 import psutil
 import os
+import tempfile
 from contextlib import contextmanager
 from typing import Generator, IO
 
@@ -114,6 +115,45 @@ def set_running_vm(image_name: str, pid: int, ssh_port: int):
     data = json.load(open(RUNNING_FILE)) if RUNNING_FILE.exists() else {}
     data[image_name] = {"pid": pid, "ssh_port": ssh_port}
     json.dump(data, open(RUNNING_FILE, "w"), indent=2)
+
+def add_usb_device(image_name: str, device_id: str):
+    try:
+        with open(RUNNING_FILE) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        data = {}
+    vm = data.setdefault(image_name, {})
+    usb = vm.setdefault("usb_devices", [])
+    if device_id not in usb:
+        usb.append(device_id)
+
+    # atomic write
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(RUNNING_FILE))
+    with os.fdopen(tmp_fd, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp_path, RUNNING_FILE)
+
+def rm_usb_device(image_name: str, device_id: str):
+    try:
+        with open(RUNNING_FILE) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        data = {}
+    vm = data.setdefault(image_name, {})
+    usb = vm.setdefault("usb_devices", [])
+    if device_id in usb:
+        usb.remove(device_id)
+
+    # atomic write
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(RUNNING_FILE))
+    with os.fdopen(tmp_fd, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp_path, RUNNING_FILE)
+
+def list_usb_devices(image_name: str):
+    with open(RUNNING_FILE) as f:
+        data = json.load(f).get(image_name)
+    return data.get("usb_devices", [])
 
 def clean_stale_vms():
     if not RUNNING_FILE.exists():
