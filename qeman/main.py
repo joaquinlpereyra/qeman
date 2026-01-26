@@ -88,8 +88,10 @@ def validate_qcow2_format(image_path: Path):
 
 @app.command()
 def fork(
-    base_image: Annotated[str, typer.Argument(help="Base image to fork", autocompletion=complete_image_names,)],
-    new_image: str):
+    base_image: Annotated[str, typer.Argument(help="Base image to fork", autocompletion=complete_image_names)],
+    new_image: Annotated[str, Argument(help="Name for the new forked image")],
+):
+    """Create a copy-on-write overlay image from a base image."""
     base_path = dotfiles.get_image(base_image)
     new_path = dotfiles.get_image(new_image)
     if new_path.exists():
@@ -106,7 +108,8 @@ def fork(
     run_command(cmd, logs.log_file(new_image))
 
 @snap_app.command("list")
-def snap_list(image: str):
+def snap_list(image: Annotated[str, Argument(help="Image to inspect", autocompletion=complete_image_names)]):
+    """List all snapshots for a QCOW2 image."""
     image_path = dotfiles.get_image(image)
     validate_qcow2_format(image_path)
     try:
@@ -119,7 +122,11 @@ def snap_list(image: str):
     dotfiles.unlock_image(lock_path)
 
 @snap_app.command("create")
-def snap_create(image: str, name: str):
+def snap_create(
+    image: Annotated[str, Argument(help="Image to snapshot", autocompletion=complete_image_names)],
+    name: Annotated[str, Argument(help="Name for the snapshot")],
+):
+    """Create a named snapshot of a QCOW2 image."""
     image_path = dotfiles.get_image(image)
     validate_qcow2_format(image_path)
     try:
@@ -131,7 +138,11 @@ def snap_create(image: str, name: str):
     dotfiles.unlock_image(lock_path)
 
 @snap_app.command("apply")
-def snap_apply(image: str, name: str):
+def snap_apply(
+    image: Annotated[str, Argument(help="Image to restore", autocompletion=complete_image_names)],
+    name: Annotated[str, Argument(help="Snapshot name to apply")],
+):
+    """Restore a QCOW2 image to a named snapshot."""
     image_path = dotfiles.get_image(image)
     validate_qcow2_format(image_path)
     try:
@@ -143,7 +154,11 @@ def snap_apply(image: str, name: str):
     dotfiles.unlock_image(lock_path)
 
 @snap_app.command("delete")
-def snap_delete(image: str, name: str):
+def snap_delete(
+    image: Annotated[str, Argument(help="Image containing snapshot", autocompletion=complete_image_names)],
+    name: Annotated[str, Argument(help="Snapshot name to delete")],
+):
+    """Delete a snapshot from a QCOW2 image."""
     image_path = dotfiles.get_image(image)
     validate_qcow2_format(image_path)
     try:
@@ -157,8 +172,10 @@ def snap_delete(image: str, name: str):
 
 @app.command()
 def new(
-    image_name: str,
-    iso: Path):
+    image_name: Annotated[str, Argument(help="Name for the new VM image")],
+    iso: Annotated[Path, Argument(help="Path to installer ISO")],
+):
+    """Create a new VM image and boot from an installer ISO."""
     if not iso.exists():
         raise typer.BadParameter(f"Installer ISO not found: {iso}")
     image_path = dotfiles.get_image(image_name)
@@ -229,7 +246,8 @@ def run_in_vm(port, cmd: str):
                     check=True)
 
 @app.command()
-def connect(vm: str = Argument(..., autocompletion=running_vm_names)):
+def connect(vm: Annotated[str, Argument(help="VM to connect to", autocompletion=running_vm_names)]):
+    """SSH into a running VM."""
     running = dotfiles.get_running_vms()
     info = running.get(vm)
     if not info:
@@ -244,9 +262,11 @@ def connect(vm: str = Argument(..., autocompletion=running_vm_names)):
 @app.command()
 def run(
     image: Annotated[str, Argument(autocompletion=complete_image_names, help="Image to run")],
-    mount: Optional[Path] = None,
-    graphical: bool = False,
-    post: Optional[Path] = None):
+    mount: Annotated[Optional[Path], typer.Option(help="Host directory to mount via 9p")] = None,
+    graphical: Annotated[bool, typer.Option(help="Enable graphical display")] = False,
+    post: Annotated[Optional[Path], typer.Option(help="Script to run after VM boots")] = None,
+):
+    """Launch a VM from an existing image."""
     image_path = dotfiles.get_image(image)
     meta = dotfiles.get_metadata(image_path)
     if meta.get("dependents"):
@@ -310,8 +330,8 @@ def run(
             typer.echo(f"Post-run script failed: {e}", err=True)
 
 @app.command()
-def kill(vms: Annotated[List[str], typer.Argument(autocompletion=running_vm_names)]):
-
+def kill(vms: Annotated[List[str], typer.Argument(help="VMs to stop", autocompletion=running_vm_names)]):
+    """Gracefully shut down one or more running VMs."""
     running = dotfiles.get_running_vms()
     for vm in vms:
         if vm not in running:
@@ -329,7 +349,8 @@ def kill(vms: Annotated[List[str], typer.Argument(autocompletion=running_vm_name
     # BUt qemu appears to remove it automatically on shutdown.
 
 @app.command()
-def info(image: str):
+def info(image: Annotated[str, Argument(help="Image to inspect", autocompletion=complete_image_names)]):
+    """Display QEMU image information and metadata."""
     image_path = dotfiles.get_image(image)
     result = subprocess.run([dotfiles.get_binary("qemu_img"), "info", str(image_path)], capture_output=True, text=True)
     if result.returncode != 0:
@@ -339,10 +360,12 @@ def info(image: str):
 
 @app.command()
 def version():
+    """Show qeman version."""
     typer.echo("qeman v0.6.0")
 
 @list_app.command("images")
 def list_cmd_images():
+    """List all managed VM images with metadata."""
     out = []
     for img in sorted(dotfiles.get_images()):
         meta = dotfiles.get_metadata(img)
@@ -354,6 +377,7 @@ def list_cmd_images():
 
 @list_app.command("vms")
 def list_cmd_vms():
+    """List running VMs with resource usage."""
     running = dotfiles.get_running_vms()
     out = []
     for name, info in running.items():
@@ -372,6 +396,7 @@ def list_cmd_vms():
 
 @app.command()
 def rm(image: Annotated[str, Argument(help="Image to remove", autocompletion=complete_image_names)]):
+    """Remove a VM image and its associated files."""
     image_path = dotfiles.get_image(image)
 
     if not image_path.exists():
@@ -409,11 +434,8 @@ def rm(image: Annotated[str, Argument(help="Image to remove", autocompletion=com
 
 
 @app.command()
-def code(vm: str):
-    """
-    SSH into the VM, run `code tunnel`, grab the device link (and code), open browser.
-    Leaves the remote tunnel running.
-    """
+def code(vm: Annotated[str, Argument(help="VM to connect to", autocompletion=running_vm_names)]):
+    """Open VS Code tunnel to a running VM."""
 
 
     def _first_url_in(line: str) -> str | None:
@@ -585,6 +607,140 @@ def usb_detach(
     if "error" in resp:
         typer.echo(f"Detach failed: {resp['error']}", err=True); raise typer.Exit(1)
     typer.echo(f"Detached {dev_id}")
+
+def get_latest_mtime_local(path: Path) -> float:
+    """Get the latest modification time of any file in the local directory."""
+    if not path.exists():
+        return 0.0
+    latest = 0.0
+    for root, dirs, files in os.walk(path):
+        for f in files:
+            try:
+                mtime = os.path.getmtime(os.path.join(root, f))
+                latest = max(latest, mtime)
+            except OSError:
+                pass
+    return latest
+
+def get_latest_mtime_remote(port: int, remote_path: str) -> float:
+    """Get the latest modification time of any file in the remote directory via SSH."""
+    ssh_cmd = ssh_command(port)
+    # Use find to get all file mtimes and return the max
+    cmd = f'find "{remote_path}" -type f -printf "%T@\\n" 2>/dev/null | sort -rn | head -1'
+    ssh_cmd.append(cmd)
+    try:
+        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0 and result.stdout.strip():
+            return float(result.stdout.strip())
+    except (subprocess.TimeoutExpired, ValueError):
+        pass
+    return 0.0
+
+@app.command()
+def sync(
+    vm: Annotated[str, Argument(help="VM to sync with", autocompletion=running_vm_names)],
+    host_dir: Annotated[str, Argument(help="Local directory path")],
+    remote_dir: Annotated[Optional[str], Argument(help="Remote directory under /home/j/ (defaults to host_dir)")] = None,
+    host_to_remote: Annotated[bool, typer.Option("--host-to-remote", "-H", help="Force sync from host to remote")] = False,
+    remote_to_host: Annotated[bool, typer.Option("--remote-to-host", "-R", help="Force sync from remote to host")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", "-n", help="Show what would be transferred")] = False,
+    delete: Annotated[bool, typer.Option("--delete", help="Delete files not present in source")] = False,
+):
+    """Sync a directory between host and a running VM using rsync.
+
+    By default, auto-detects which side has newer changes and syncs accordingly.
+    Use --host-to-remote or --remote-to-host to override.
+
+    Examples:
+        qeman sync myvm project/foo        # syncs to /home/j/project/foo
+        qeman sync myvm ~/code otherdir    # syncs ~/code to /home/j/otherdir
+    """
+    running = dotfiles.get_running_vms()
+    info = running.get(vm)
+    if not info:
+        typer.echo(f"VM '{vm}' is not running.", err=True)
+        raise typer.Exit(1)
+
+    port = info["ssh_port"]
+    host_path = Path(host_dir).expanduser().resolve()
+
+    # Default remote_dir to host_dir if not specified
+    if remote_dir is None:
+        remote_dir = host_dir
+    remote_path = f"/home/j/{remote_dir}"
+
+    typer.echo(f"Host: {host_path}")
+    typer.echo(f"Remote: {remote_path}")
+
+    if host_to_remote and remote_to_host:
+        typer.echo("Cannot specify both --host-to-remote and --remote-to-host", err=True)
+        raise typer.Exit(1)
+
+    # Determine sync direction
+    if host_to_remote:
+        direction = "host-to-remote"
+    elif remote_to_host:
+        direction = "remote-to-host"
+    else:
+        # Auto-detect based on modification times
+        typer.echo("Auto-detecting sync direction...")
+        host_mtime = get_latest_mtime_local(host_path)
+        remote_mtime = get_latest_mtime_remote(port, remote_path)
+
+        if host_mtime == 0 and remote_mtime == 0:
+            typer.echo("Neither directory contains files. Use --host-to-remote or --remote-to-host.", err=True)
+            raise typer.Exit(1)
+        elif host_mtime >= remote_mtime:
+            direction = "host-to-remote"
+            typer.echo(f"Host is newer (or equal), syncing host -> remote")
+        else:
+            direction = "remote-to-host"
+            typer.echo(f"Remote is newer, syncing remote -> host")
+
+    # Build SSH options for rsync
+    ssh_config = dotfiles.get_ssh_config()
+    key_path_str = ssh_config.get("key_path")
+    if not key_path_str:
+        typer.echo("SSH key path not configured in ~/.qeman/config.toml", err=True)
+        raise typer.Exit(1)
+    key_path = Path(key_path_str).expanduser()
+    ssh_opts = f"ssh -p {port} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -F /dev/null -i {key_path}"
+
+    # Build rsync command
+    rsync_cmd = ["rsync", "-avz", "--progress", "-e", ssh_opts]
+
+    if dry_run:
+        rsync_cmd.append("--dry-run")
+    if delete:
+        rsync_cmd.append("--delete")
+
+    if direction == "host-to-remote":
+        # Ensure host path exists
+        if not host_path.exists():
+            typer.echo(f"Host directory does not exist: {host_path}", err=True)
+            raise typer.Exit(1)
+        # Create remote directory if it doesn't exist
+        run_in_vm(port, f'mkdir -p "{remote_path}"')
+        # Add trailing slash to copy contents, not the directory itself
+        src = f"{host_path}/"
+        dst = f"j@localhost:{remote_path}/"
+        typer.echo(f"Syncing: {host_path} -> {vm}:{remote_path}")
+    else:
+        # remote-to-host
+        host_path.mkdir(parents=True, exist_ok=True)
+        src = f"j@localhost:{remote_path}/"
+        dst = f"{host_path}/"
+        typer.echo(f"Syncing: {vm}:{remote_path} -> {host_path}")
+
+    rsync_cmd.extend([src, dst])
+
+    # Run rsync
+    result = subprocess.run(rsync_cmd)
+    if result.returncode != 0:
+        typer.echo("Rsync failed", err=True)
+        raise typer.Exit(result.returncode)
+
+    typer.echo("Sync complete.")
 
 # main.py should never by a library anyway,
 # so no worries about putting this in the top level
