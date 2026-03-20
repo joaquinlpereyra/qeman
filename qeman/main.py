@@ -645,6 +645,7 @@ def sync(
     remote_to_host: Annotated[bool, typer.Option("--remote-to-host", "-R", help="Force sync from remote to host")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run", "-n", help="Show what would be transferred")] = False,
     delete: Annotated[bool, typer.Option("--delete", help="Delete files not present in source")] = False,
+    git_ignore: Annotated[bool, typer.Option("--git-ignore", "-g", help="Respect .gitignore files")] = False,
 ):
     """Sync a directory between host and a running VM using rsync.
 
@@ -713,6 +714,8 @@ def sync(
         rsync_cmd.append("--dry-run")
     if delete:
         rsync_cmd.append("--delete")
+    if git_ignore:
+        rsync_cmd.append("--filter=:- .gitignore")
 
     if direction == "host-to-remote":
         # Ensure host path exists
